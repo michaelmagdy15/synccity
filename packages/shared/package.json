@@ -1,0 +1,10 @@
+{
+  "name": "@synccity/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./protocol": "./src/protocol.ts",
+    "./world": "./src/world.ts"
+  }
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- INTENTIONALLY INCOMPLETE: this template makes no data-collection claim.
+         Do not add to the app target or rename until the privacy inventory is done.
+         Populate NSPrivacyTracking, NSPrivacyTrackingDomains,
+         NSPrivacyCollectedDataTypes and NSPrivacyAccessedAPITypes as applicable.
+         Reasons must match actual API usage in the app and every bundled SDK.
+         See docs/IOS_SETUP.md. -->
+</dict>
+</plist>
