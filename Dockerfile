@@ -15,7 +15,7 @@ RUN npm ci
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
 COPY apps/server ./apps/server
-COPY vite.config.ts index.html ./
+COPY vite.config.ts ./
 
 # Build production web bundle into dist/
 RUN npm run build
