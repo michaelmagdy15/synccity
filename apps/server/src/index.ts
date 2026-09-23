@@ -33,8 +33,8 @@ async function main() {
         if (distDir) {
           console.log(`[SyncCity Server] Serving web assets from ${distDir}`);
           app.use(express.static(distDir));
-          app.get('*', (req: any, res: any, next: any) => {
-            if (req.path.startsWith('/matchmake') || req.path.startsWith('/health')) {
+          app.use((req: any, res: any, next: any) => {
+            if (req.method !== 'GET' || req.path.startsWith('/matchmake') || req.path.startsWith('/health')) {
               return next();
             }
             res.sendFile(path.join(distDir, 'index.html'));
