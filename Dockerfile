@@ -29,6 +29,7 @@ ENV PORT=8080
 
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
+COPY apps/web/package.json ./apps/web/
 COPY apps/server/package.json ./apps/server/
 
 RUN npm ci --omit=dev
