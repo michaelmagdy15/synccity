@@ -11,7 +11,7 @@
   "dependencies": {
     "@colyseus/schema": "5.0.33",
     "@synccity/shared": "0.0.0",
-    "colyseus": "0.18.7"
-  },
-  "devDependencies": { "tsx": "4.23.15" }
+    "colyseus": "0.18.7",
+    "tsx": "4.23.15"
+  }
 }
