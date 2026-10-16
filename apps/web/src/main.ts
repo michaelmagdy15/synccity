@@ -98,14 +98,10 @@ const roomParam =
   (window.location.hash.startsWith('#room=') ? window.location.hash.slice(6) : '');
 hud.showLobby(roomParam);
 
-// Input send timer at 25 Hz (40 ms)
+// High-frequency 30Hz (33ms) input sender + instant edge-trigger when keys/touch change
 let latestAxes = { axisX: 0, axisZ: 0, throttle: 0, steer: 0, brake: false };
-setInterval(() => {
-  if (!network.localPlayerId) return;
-  inputManager.cameraYaw = world.cameraFollow.currentYaw;
-  latestAxes = inputManager.sample();
-  network.sendInput(latestAxes);
-}, 40);
+let lastSentAxes = { axisX: 0, axisZ: 0, throttle: 0, steer: 0, brake: false };
+let lastInputSendMs = 0;
 
 // State trackers for Audio cues (Countdown, Laps, Checkpoints)
 let prevCountdownSec = -1;
@@ -139,6 +135,22 @@ function animate(currentTime: number): void {
   // Sample inputs locally every frame for zero-latency dead-reckoning
   inputManager.cameraYaw = world.cameraFollow.currentYaw;
   latestAxes = inputManager.sample();
+
+  // Immediately transmit input on key/pedal transition OR every 33ms (30Hz)
+  if (network.localPlayerId) {
+    const inputChanged =
+      Math.abs(latestAxes.axisX - lastSentAxes.axisX) > 0.02 ||
+      Math.abs(latestAxes.axisZ - lastSentAxes.axisZ) > 0.02 ||
+      Math.abs(latestAxes.throttle - lastSentAxes.throttle) > 0.02 ||
+      Math.abs(latestAxes.steer - lastSentAxes.steer) > 0.02 ||
+      latestAxes.brake !== lastSentAxes.brake;
+
+    if ((inputChanged && currentTime - lastInputSendMs >= 14) || currentTime - lastInputSendMs >= 33) {
+      lastInputSendMs = currentTime;
+      lastSentAxes = { ...latestAxes };
+      network.sendInput(latestAxes);
+    }
+  }
 
   const state = network.getInterpolatedState(latestAxes);
   if (state) {

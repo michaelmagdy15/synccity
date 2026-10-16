@@ -47,8 +47,6 @@ export class CameraFollow {
     });
   }
 
-  private desiredCamPos = new THREE.Vector3();
-
   public update(
     targetX: number,
     targetY: number,
@@ -58,22 +56,20 @@ export class CameraFollow {
     dt: number
   ): void {
     const desiredDistance = isVehicle ? 8.2 : 5.5;
-    const desiredHeight = isVehicle ? 3.1 : 2.0;
+    const desiredHeight = isVehicle ? 3.0 : 2.1;
 
-    // Smoothly adjust distance
-    const distBlend = 1 - Math.exp(-8 * dt);
+    // Smoothly adjust boom distance only when switching between walking and driving
+    const distBlend = 1 - Math.exp(-10 * dt);
     this.currentDistance += (desiredDistance - this.currentDistance) * distBlend;
 
-    // If not orbiting manually, gently align camera behind heading
+    // If not orbiting manually, gently align camera yaw behind heading
     if (!this.isOrbiting) {
       let yawDiff = targetYaw - this.currentYaw;
       while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
       while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
-      const alignSpeed = isVehicle ? 6.0 : 3.0;
+      const alignSpeed = isVehicle ? 6.5 : 4.5;
       this.currentYaw += yawDiff * (1 - Math.exp(-alignSpeed * dt));
     }
-
-    this.targetPosition.set(targetX, targetY + desiredHeight, targetZ);
 
     const cosPitch = Math.cos(this.currentPitch);
     const sinPitch = Math.sin(this.currentPitch);
@@ -84,16 +80,12 @@ export class CameraFollow {
     const offsetY = sinPitch * this.currentDistance + desiredHeight;
     const offsetZ = -cosYaw * cosPitch * this.currentDistance;
 
-    this.desiredCamPos.set(
+    // Keep a rigid boom arm relative to the already-smoothed target so pitch never bobs up and down
+    this.camera.position.set(
       targetX + offsetX,
       targetY + offsetY,
       targetZ + offsetZ
     );
-
-    // Frame-rate independent camera damping
-    const dampFactor = 1 - Math.exp(-18 * dt);
-    this.smoothedPosition.lerp(this.desiredCamPos, dampFactor);
-    this.camera.position.copy(this.smoothedPosition);
 
     this.camera.lookAt(targetX, targetY + 1.15, targetZ);
   }

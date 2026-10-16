@@ -453,6 +453,30 @@ export class World {
     banner.position.set(0, 7.9, 0);
     gantry.add(banner);
 
+    // Glowing 3D Sign: "BUILT BY MOTATO & MARMOURA"
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 1024;
+    signCanvas.height = 128;
+    const sCtx = signCanvas.getContext('2d')!;
+    sCtx.fillStyle = '#120a28';
+    sCtx.fillRect(0, 0, 1024, 128);
+    sCtx.strokeStyle = '#73e6f5';
+    sCtx.lineWidth = 6;
+    sCtx.strokeRect(4, 4, 1016, 120);
+    sCtx.font = '900 44px Orbitron, sans-serif';
+    sCtx.textAlign = 'center';
+    sCtx.textBaseline = 'middle';
+    sCtx.fillStyle = '#ffd15c';
+    sCtx.fillText('★ BUILT BY MOTATO & MARMOURA ★', 512, 66);
+    const signTex = new THREE.CanvasTexture(signCanvas);
+    const signBoardMat = new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide });
+    const signBoard = new THREE.Mesh(new THREE.PlaneGeometry(14.5, 1.8), signBoardMat);
+    signBoard.position.set(0, 9.0, -0.65);
+    signBoard.rotation.y = Math.PI;
+    const signBoardBack = new THREE.Mesh(new THREE.PlaneGeometry(14.5, 1.8), signBoardMat);
+    signBoardBack.position.set(0, 9.0, 0.65);
+    gantry.add(signBoard, signBoardBack);
+
     // 3 Traffic Light Globes
     this.trafficLightMaterials = [
       new THREE.MeshBasicMaterial({ color: 0x330000 }),
@@ -945,9 +969,9 @@ export class World {
         const isSeated = player.mode !== 'walking';
         const veh = isSeated ? snapshot.vehicles[player.vehicleId] : undefined;
         localTransform = {
-          x: player.x,
-          y: player.y,
-          z: player.z,
+          x: veh ? veh.x : player.x,
+          y: 0,
+          z: veh ? veh.z : player.z,
           yaw: veh ? veh.yaw : player.yaw,
           isVehicle: isSeated,
           speed: veh ? Math.abs(veh.speed) : 0,
@@ -962,7 +986,7 @@ export class World {
       }
     }
 
-    // 5. Camera Follow & Speed FOV Warp
+    // 5. Camera Follow (Rigid height & constant FOV for zero vertical bobbing)
     if (activePlayers.has(localPlayerId)) {
       this.cameraFollow.update(
         localTransform.x,
@@ -972,14 +996,6 @@ export class World {
         localTransform.isVehicle,
         dt
       );
-
-      const targetFov = localTransform.isVehicle
-        ? 62 + Math.min(13, (localTransform.speed / 18) * 13)
-        : 62;
-      if (Math.abs(this.camera.fov - targetFov) > 0.08) {
-        this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 6);
-        this.camera.updateProjectionMatrix();
-      }
     }
 
     this.renderer.render(this.scene, this.camera);

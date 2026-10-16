@@ -2,7 +2,7 @@
 export const PROTOCOL_VERSION = 1 as const;
 export const ROOM_NAME = 'city' as const;
 export const LIMITS = {
-  roomPlayers: 8, simulationHz: 20, patchMs: 50, inputHz: 20,
+  roomPlayers: 8, simulationHz: 30, patchMs: 33, inputHz: 30,
   staleInputMs: 250, reconnectSeconds: 20, chatCharacters: 240,
   nameCharacters: 20, enterDistance: 3, enterMaxSpeed: 1,
   exitMaxSpeed: 1, walkingSpeed: 5, forwardSpeed: 18, reverseSpeed: 6,

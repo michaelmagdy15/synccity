@@ -12,6 +12,13 @@ import {
   type ServerMessages,
   type VehicleState,
 } from '@synccity/shared/protocol';
+import {
+  CITY_BOUNDS,
+  CITY_COLLIDERS,
+  getSeatWorldTransform,
+  resolveCircleCollision,
+  stepVehicleKinematics,
+} from '@synccity/shared/world';
 
 export interface StateSnapshot {
   timeMs: number;
@@ -36,6 +43,7 @@ export class NetworkClient {
 
   private snapshots: StateSnapshot[] = [];
   private maxSnapshots = 20;
+  private playerVelocities = new Map<string, { vx: number; vz: number }>();
 
   private onChatCallbacks: ChatCallback[] = [];
   private onLatencyCallbacks: LatencyCallback[] = [];
@@ -157,9 +165,24 @@ export class NetworkClient {
   }
 
   private recordSnapshot(state: any): void {
+    const nowPerf = performance.now();
+    const prevSnap = this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
+    const dtSnap = prevSnap ? Math.max(0.015, (nowPerf - prevSnap.timeMs) * 0.001) : 0.033;
+
     const players: Record<string, PlayerState> = {};
     if (state.players) {
       state.players.forEach((p: any, key: string) => {
+        if (prevSnap && prevSnap.players[key] && dtSnap < 0.25) {
+          const prevP = prevSnap.players[key];
+          const vx = Math.max(-25, Math.min(25, (p.x - prevP.x) / dtSnap));
+          const vz = Math.max(-25, Math.min(25, (p.z - prevP.z) / dtSnap));
+          const oldVel = this.playerVelocities.get(key) || { vx: 0, vz: 0 };
+          this.playerVelocities.set(key, {
+            vx: oldVel.vx * 0.35 + vx * 0.65,
+            vz: oldVel.vz * 0.35 + vz * 0.65,
+          });
+        }
+
         players[key] = {
           id: p.id,
           displayName: p.displayName,
@@ -237,7 +260,7 @@ export class NetworkClient {
     } : undefined;
 
     this.snapshots.push({
-      timeMs: Date.now(),
+      timeMs: nowPerf,
       players,
       vehicles,
       delivery,
@@ -253,8 +276,8 @@ export class NetworkClient {
   private lastSmoothTimeMs: number = performance.now();
 
   /**
-   * Frame-rate independent dead-reckoning + exponential smoothing.
-   * Eliminates 100ms bucket-jump rubber-banding and per-frame GC allocations.
+   * Deterministic shared physics prediction + time-projected server reconciliation.
+   * Eliminates 20Hz/30Hz sawtooth rubber-banding and keeps remote players silky smooth.
    */
   public getInterpolatedState(localInput?: {
     axisX: number;
@@ -267,8 +290,11 @@ export class NetworkClient {
     const latest = this.snapshots[this.snapshots.length - 1];
 
     const now = performance.now();
-    const dt = Math.min(0.1, Math.max(0.001, (now - this.lastSmoothTimeMs) * 0.001));
+    const dt = Math.min(0.05, Math.max(0.001, (now - this.lastSmoothTimeMs) * 0.001));
     this.lastSmoothTimeMs = now;
+
+    // Exact time elapsed since the latest authoritative server packet arrived
+    const pktAgeSec = Math.min(0.065, Math.max(0, (now - latest.timeMs) * 0.001));
 
     if (!this.smoothedState) {
       const initPlayers: Record<string, PlayerState> = {};
@@ -287,7 +313,8 @@ export class NetworkClient {
       return this.smoothedState;
     }
 
-    const posBlend = 1 - Math.exp(-16 * dt);
+    const remoteBlend = 1 - Math.exp(-20 * dt);
+    const localDriftBlend = 1 - Math.exp(-5 * dt);
     const yawBlend = 1 - Math.exp(-18 * dt);
 
     const lerpAngle = (a: number, b: number, t: number) => {
@@ -297,7 +324,7 @@ export class NetworkClient {
       return a + diff * t;
     };
 
-    // 1. Update Vehicles with velocity dead-reckoning + authoritative convergence
+    // 1. Update Vehicles
     const sVehicles = this.smoothedState.vehicles;
     for (const id of Object.keys(sVehicles)) {
       if (!latest.vehicles[id]) delete sVehicles[id];
@@ -310,46 +337,75 @@ export class NetworkClient {
       }
 
       const isLocalDriver = nv.seats[0] === this.localPlayerId;
-      let predictedSpeed = nv.speed;
-      let predictedYaw = nv.yaw;
 
       if (isLocalDriver && localInput) {
-        if (localInput.brake) {
-          predictedSpeed *= Math.max(0, 1 - 6 * dt);
-        } else if (localInput.throttle > 0) {
-          predictedSpeed = Math.min(LIMITS.forwardSpeed, predictedSpeed + localInput.throttle * 14 * dt);
-        } else if (localInput.throttle < 0) {
-          predictedSpeed = Math.max(-LIMITS.reverseSpeed, predictedSpeed + localInput.throttle * 10 * dt);
-        }
-        if (Math.abs(predictedSpeed) > 0.2) {
-          const dir = predictedSpeed >= 0 ? 1 : -1;
-          predictedYaw = sv.yaw - localInput.steer * 2.1 * dir * dt;
-        }
-      }
+        // Step local vehicle with the exact shared deterministic kinematics at render FPS
+        const stepped = stepVehicleKinematics(
+          sv,
+          localInput.throttle,
+          localInput.steer,
+          localInput.brake,
+          dt,
+          CITY_COLLIDERS,
+          CITY_BOUNDS
+        );
+        sv.x = stepped.x;
+        sv.y = 0;
+        sv.z = stepped.z;
+        sv.yaw = stepped.yaw;
+        sv.speed = stepped.speed;
 
-      // Advance along current velocity vector (dead-reckoning)
-      sv.x += Math.sin(sv.yaw) * predictedSpeed * dt;
-      sv.z += Math.cos(sv.yaw) * predictedSpeed * dt;
+        // Project server packet forward by pktAgeSec so we compare like-for-like timestamps
+        const authProjected =
+          pktAgeSec > 0.002
+            ? stepVehicleKinematics(
+                nv,
+                localInput.throttle,
+                localInput.steer,
+                localInput.brake,
+                pktAgeSec,
+                CITY_COLLIDERS,
+                CITY_BOUNDS
+              )
+            : nv;
 
-      // Smoothly pull toward authoritative server state
-      const errSq = (nv.x - sv.x) * (nv.x - sv.x) + (nv.z - sv.z) * (nv.z - sv.z);
-      if (errSq > 36) {
-        // Teleport if >6m out of sync
-        sv.x = nv.x;
-        sv.z = nv.z;
-        sv.yaw = nv.yaw;
+        const errSq =
+          (authProjected.x - sv.x) * (authProjected.x - sv.x) +
+          (authProjected.z - sv.z) * (authProjected.z - sv.z);
+        if (errSq > 36) {
+          sv.x = authProjected.x;
+          sv.z = authProjected.z;
+          sv.yaw = authProjected.yaw;
+          sv.speed = authProjected.speed;
+        } else {
+          sv.x += (authProjected.x - sv.x) * localDriftBlend;
+          sv.z += (authProjected.z - sv.z) * localDriftBlend;
+          sv.yaw = lerpAngle(sv.yaw, authProjected.yaw, localDriftBlend);
+          sv.speed += (authProjected.speed - sv.speed) * localDriftBlend;
+        }
       } else {
-        sv.x += (nv.x - sv.x) * posBlend;
-        sv.z += (nv.z - sv.z) * posBlend;
-        sv.yaw = lerpAngle( isLocalDriver ? predictedYaw : sv.yaw, nv.yaw, yawBlend );
+        // Remote or unoccupied vehicle: project forward along velocity over pktAgeSec
+        const targetX = nv.x + Math.sin(nv.yaw) * nv.speed * pktAgeSec;
+        const targetZ = nv.z + Math.cos(nv.yaw) * nv.speed * pktAgeSec;
+        const errSq = (targetX - sv.x) * (targetX - sv.x) + (targetZ - sv.z) * (targetZ - sv.z);
+        if (errSq > 36) {
+          sv.x = targetX;
+          sv.z = targetZ;
+          sv.yaw = nv.yaw;
+        } else {
+          sv.x += (targetX - sv.x) * remoteBlend;
+          sv.z += (targetZ - sv.z) * remoteBlend;
+          sv.yaw = lerpAngle(sv.yaw, nv.yaw, yawBlend);
+        }
+        sv.y = 0;
+        sv.speed += (nv.speed - sv.speed) * remoteBlend;
       }
-      sv.y = nv.y;
-      sv.speed += (nv.speed - sv.speed) * posBlend;
+
       sv.seats[0] = nv.seats[0];
       sv.seats[1] = nv.seats[1];
     }
 
-    // 2. Update Players with dead-reckoning + authoritative convergence
+    // 2. Update Players
     const sPlayers = this.smoothedState.players;
     for (const id of Object.keys(sPlayers)) {
       if (!latest.players[id]) delete sPlayers[id];
@@ -362,34 +418,76 @@ export class NetworkClient {
       }
 
       if (np.mode !== 'walking' && np.vehicleId && sVehicles[np.vehicleId]) {
-        // Lock seated players directly to the smoothed vehicle transform
+        // Lock seated players to the exact shared seat transform on the smoothed vehicle
         const veh = sVehicles[np.vehicleId];
-        const sideOffset = np.seatIndex === 0 ? 0.55 : -0.55;
-        const sinY = Math.sin(veh.yaw);
-        const cosY = Math.cos(veh.yaw);
-        sp.x = veh.x + sideOffset * cosY - 0.1 * sinY;
-        sp.y = veh.y + 0.35;
-        sp.z = veh.z - sideOffset * sinY - 0.1 * cosY;
-        sp.yaw = veh.yaw;
-      } else {
-        if (id === this.localPlayerId && localInput) {
-          const mag = Math.hypot(localInput.axisX, localInput.axisZ);
-          if (mag > 0.05) {
-            const nx = localInput.axisX / Math.max(1, mag);
-            const nz = localInput.axisZ / Math.max(1, mag);
-            sp.x += nx * LIMITS.walkingSpeed * dt;
-            sp.z += nz * LIMITS.walkingSpeed * dt;
-          }
+        const seatIdx: 0 | 1 = np.seatIndex === 1 ? 1 : 0;
+        const t = getSeatWorldTransform(veh.x, veh.y, veh.z, veh.yaw, seatIdx);
+        sp.x = t.x;
+        sp.y = t.y;
+        sp.z = t.z;
+        sp.yaw = t.yaw;
+      } else if (id === this.localPlayerId && localInput) {
+        // Local walking player: run exact shared collision step at render FPS
+        let ax = localInput.axisX || 0;
+        let az = localInput.axisZ || 0;
+        const lenSq = ax * ax + az * az;
+        if (lenSq > 1) {
+          const invLen = 1 / Math.sqrt(lenSq);
+          ax *= invLen;
+          az *= invLen;
         }
-        const errSq = (np.x - sp.x) * (np.x - sp.x) + (np.z - sp.z) * (np.z - sp.z);
+        if (lenSq > 0.001) {
+          const stepRes = resolveCircleCollision(
+            sp.x,
+            sp.z,
+            sp.x + ax * LIMITS.walkingSpeed * dt,
+            sp.z + az * LIMITS.walkingSpeed * dt,
+            0.45,
+            CITY_COLLIDERS,
+            CITY_BOUNDS
+          );
+          sp.x = stepRes.x;
+          sp.z = stepRes.z;
+          sp.yaw = lerpAngle(sp.yaw, Math.atan2(ax, az), yawBlend);
+        }
+
+        // Project server walking position by pktAgeSec so there is zero backward bungee pull
+        const authWalk =
+          lenSq > 0.001 && pktAgeSec > 0.002
+            ? resolveCircleCollision(
+                np.x,
+                np.z,
+                np.x + ax * LIMITS.walkingSpeed * pktAgeSec,
+                np.z + az * LIMITS.walkingSpeed * pktAgeSec,
+                0.45,
+                CITY_COLLIDERS,
+                CITY_BOUNDS
+              )
+            : { x: np.x, z: np.z };
+
+        const errSq = (authWalk.x - sp.x) * (authWalk.x - sp.x) + (authWalk.z - sp.z) * (authWalk.z - sp.z);
         if (errSq > 25) {
-          sp.x = np.x;
-          sp.z = np.z;
+          sp.x = authWalk.x;
+          sp.z = authWalk.z;
         } else {
-          sp.x += (np.x - sp.x) * posBlend;
-          sp.z += (np.z - sp.z) * posBlend;
+          sp.x += (authWalk.x - sp.x) * localDriftBlend;
+          sp.z += (authWalk.z - sp.z) * localDriftBlend;
         }
-        sp.y = np.y;
+        sp.y = 0;
+      } else {
+        // Remote walking player: project forward along estimated velocity over pktAgeSec
+        const vel = this.playerVelocities.get(id) || { vx: 0, vz: 0 };
+        const targetX = np.x + vel.vx * pktAgeSec;
+        const targetZ = np.z + vel.vz * pktAgeSec;
+        const errSq = (targetX - sp.x) * (targetX - sp.x) + (targetZ - sp.z) * (targetZ - sp.z);
+        if (errSq > 25) {
+          sp.x = targetX;
+          sp.z = targetZ;
+        } else {
+          sp.x += (targetX - sp.x) * remoteBlend;
+          sp.z += (targetZ - sp.z) * remoteBlend;
+        }
+        sp.y = 0;
         sp.yaw = lerpAngle(sp.yaw, np.yaw, yawBlend);
       }
 

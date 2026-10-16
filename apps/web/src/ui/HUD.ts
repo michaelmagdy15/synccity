@@ -123,6 +123,7 @@ export class HUD {
           <button class="btn btn-primary btn-xs" id="btn-start-race">🏁 Race</button>
           <span class="mission-divider">|</span>
           <span class="delivery-text" id="delivery-text">Co-op: Board car at Docks</span>
+          <span class="hud-creator-pill">★ BUILT BY MOTATO &amp; MARMOURA</span>
         </div>
 
         <!-- Right: Digital Speedometer & Role -->
@@ -216,7 +217,8 @@ export class HUD {
             <div class="modal-header">
               <div class="io-badge">LIVE .IO MULTIPLAYER</div>
               <h1 class="modal-title">SYNC<span>CITY</span></h1>
-              <p class="modal-tagline">400m Synthwave Metropolis · Co-op Driving & Grand Prix Racing</p>
+              <div class="creator-credit-badge">★ BUILT BY MOTATO &amp; MARMOURA ★</div>
+              <p class="modal-tagline">400m Synthwave Metropolis · Co-op Driving &amp; Grand Prix Racing</p>
             </div>
             <div class="form-group">
               <label for="input-nickname">Driver Callsign</label>
