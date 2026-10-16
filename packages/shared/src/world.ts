@@ -111,6 +111,25 @@ export const RACE_CIRCUIT: RaceCheckpointDef[] = [
   { index: 6, id: 'gate_sprint', name: 'Harbor Sprint', x: 100, z: 25, radius: 12, yaw: 0 },
 ];
 
+export interface SpeedBoostPadDef {
+  id: string;
+  x: number;
+  z: number;
+  yaw: number;
+  radius: number;
+}
+
+export const SPEED_BOOST_PADS: SpeedBoostPadDef[] = [
+  { id: 'boost_start_straight', x: 0, z: 62, yaw: 0, radius: 4.5 },
+  { id: 'boost_south_straight', x: -50, z: 100, yaw: -Math.PI / 2, radius: 4.5 },
+  { id: 'boost_west_south', x: -100, z: 45, yaw: Math.PI, radius: 4.5 },
+  { id: 'boost_west_north', x: -100, z: -45, yaw: Math.PI, radius: 4.5 },
+  { id: 'boost_north_west', x: -50, z: -100, yaw: Math.PI / 2, radius: 4.5 },
+  { id: 'boost_north_east', x: 50, z: -100, yaw: Math.PI / 2, radius: 4.5 },
+  { id: 'boost_east_straight', x: 100, z: -38, yaw: 0, radius: 4.5 },
+  { id: 'boost_harbor_cut', x: 50, z: 0, yaw: -Math.PI / 2, radius: 4.5 },
+];
+
 export interface RoadSegment {
   id: string;
   startX: number;
@@ -302,16 +321,18 @@ export function stepVehicleKinematics(
   bounds: Bounds = CITY_BOUNDS
 ): { x: number; y: number; z: number; yaw: number; speed: number } {
   // Clamp delta time to avoid large jumps
-  const clampedDt = Math.max(0.001, Math.min(dt, 0.1));
+  const clampedDt = Math.max(0.001, Math.min(Number.isFinite(dt) ? dt : 0.016, 0.1));
+  const safeThrottle = Number.isFinite(throttle) ? Math.max(-1, Math.min(1, throttle)) : 0;
+  const safeSteer = Number.isFinite(steer) ? Math.max(-1, Math.min(1, steer)) : 0;
   const carRadius = 1.3;
 
-  let speed = state.speed;
-  let yaw = state.yaw;
+  let speed = Number.isFinite(state.speed) ? state.speed : 0;
+  let yaw = Number.isFinite(state.yaw) ? state.yaw : 0;
 
   // 1. Acceleration / Braking
-  const accelRate = 12.0;    // m/s^2 forward
-  const reverseRate = 7.0;   // m/s^2 reverse
-  const brakeRate = 22.0;    // m/s^2 brake
+  const accelRate = 13.5;    // m/s^2 forward (snappier arcade launch)
+  const reverseRate = 7.5;   // m/s^2 reverse
+  const brakeRate = 24.0;    // m/s^2 brake
   const frictionRate = 4.0;  // m/s^2 rolling friction
 
   if (brake) {
@@ -320,17 +341,20 @@ export function stepVehicleKinematics(
     } else if (speed < 0) {
       speed = Math.min(0, speed + brakeRate * clampedDt);
     }
-  } else if (throttle > 0.05) {
+  } else if (safeThrottle > 0.05) {
     if (speed < 0) {
-      speed += (brakeRate + accelRate) * clampedDt * throttle;
+      speed += (brakeRate + accelRate) * clampedDt * safeThrottle;
+    } else if (speed > LIMITS.forwardSpeed) {
+      // Smoothly decay turbo overspeed back toward normal max speed
+      speed = Math.max(LIMITS.forwardSpeed, speed - 5.5 * clampedDt);
     } else {
-      speed = Math.min(LIMITS.forwardSpeed, speed + accelRate * clampedDt * throttle);
+      speed = Math.min(LIMITS.forwardSpeed, speed + accelRate * clampedDt * safeThrottle);
     }
-  } else if (throttle < -0.05) {
+  } else if (safeThrottle < -0.05) {
     if (speed > 0) {
-      speed -= (brakeRate + reverseRate) * clampedDt * Math.abs(throttle);
+      speed -= (brakeRate + reverseRate) * clampedDt * Math.abs(safeThrottle);
     } else {
-      speed = Math.max(-LIMITS.reverseSpeed, speed - reverseRate * clampedDt * Math.abs(throttle));
+      speed = Math.max(-LIMITS.reverseSpeed, speed - reverseRate * clampedDt * Math.abs(safeThrottle));
     }
   } else {
     // Rolling friction
@@ -341,13 +365,26 @@ export function stepVehicleKinematics(
     }
   }
 
+  // DashCraft-style Track Booster Pads: driving over a pad surges speed to 1.38x max speed
+  if (!brake && speed > 1.5 && safeThrottle >= 0) {
+    for (let i = 0; i < SPEED_BOOST_PADS.length; i++) {
+      const pad = SPEED_BOOST_PADS[i];
+      const dx = state.x - pad.x;
+      const dz = state.z - pad.z;
+      if (dx * dx + dz * dz <= pad.radius * pad.radius) {
+        speed = Math.max(speed, LIMITS.forwardSpeed * 1.38);
+        break;
+      }
+    }
+  }
+
   // 2. Steering (yaw rate proportional to direction and speed)
-  if (Math.abs(speed) > 0.1 && Math.abs(steer) > 0.02) {
+  if (Math.abs(speed) > 0.1 && Math.abs(safeSteer) > 0.02) {
     const speedFactor = Math.min(1.0, Math.abs(speed) / 6.0);
     const steerDir = speed >= 0 ? 1 : -1;
-    const maxTurnRate = 2.0; // rad/s
+    const maxTurnRate = 2.15; // rad/s
     // Screen right is -X, screen left is +X when facing +Z
-    yaw -= steer * maxTurnRate * speedFactor * steerDir * clampedDt;
+    yaw -= safeSteer * maxTurnRate * speedFactor * steerDir * clampedDt;
 
     // Normalize yaw to [-PI, PI]
     while (yaw > Math.PI) yaw -= Math.PI * 2;

@@ -47,6 +47,8 @@ export class CameraFollow {
     });
   }
 
+  private desiredCamPos = new THREE.Vector3();
+
   public update(
     targetX: number,
     targetY: number,
@@ -55,25 +57,24 @@ export class CameraFollow {
     isVehicle: boolean,
     dt: number
   ): void {
-    const desiredDistance = isVehicle ? 8.5 : 5.5;
-    const desiredHeight = isVehicle ? 3.2 : 2.0;
+    const desiredDistance = isVehicle ? 8.2 : 5.5;
+    const desiredHeight = isVehicle ? 3.1 : 2.0;
 
     // Smoothly adjust distance
-    this.currentDistance += (desiredDistance - this.currentDistance) * Math.min(1, dt * 5);
+    const distBlend = 1 - Math.exp(-8 * dt);
+    this.currentDistance += (desiredDistance - this.currentDistance) * distBlend;
 
     // If not orbiting manually, gently align camera behind heading
     if (!this.isOrbiting) {
       let yawDiff = targetYaw - this.currentYaw;
       while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
       while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
-      const alignSpeed = isVehicle ? 4.5 : 2.5;
-      this.currentYaw += yawDiff * Math.min(1, dt * alignSpeed);
+      const alignSpeed = isVehicle ? 6.0 : 3.0;
+      this.currentYaw += yawDiff * (1 - Math.exp(-alignSpeed * dt));
     }
 
     this.targetPosition.set(targetX, targetY + desiredHeight, targetZ);
 
-    // Calculate camera offset behind the target using currentYaw & currentPitch
-    // Yaw 0 looks along +Z, camera placed at -Z
     const cosPitch = Math.cos(this.currentPitch);
     const sinPitch = Math.sin(this.currentPitch);
     const sinYaw = Math.sin(this.currentYaw);
@@ -83,18 +84,17 @@ export class CameraFollow {
     const offsetY = sinPitch * this.currentDistance + desiredHeight;
     const offsetZ = -cosYaw * cosPitch * this.currentDistance;
 
-    const desiredCamPos = new THREE.Vector3(
+    this.desiredCamPos.set(
       targetX + offsetX,
       targetY + offsetY,
       targetZ + offsetZ
     );
 
-    // Smooth camera damping
-    const dampFactor = Math.min(1, dt * 10);
-    this.smoothedPosition.lerp(desiredCamPos, dampFactor);
+    // Frame-rate independent camera damping
+    const dampFactor = 1 - Math.exp(-18 * dt);
+    this.smoothedPosition.lerp(this.desiredCamPos, dampFactor);
     this.camera.position.copy(this.smoothedPosition);
 
-    // Look slightly above the target
-    this.camera.lookAt(targetX, targetY + 1.2, targetZ);
+    this.camera.lookAt(targetX, targetY + 1.15, targetZ);
   }
 }

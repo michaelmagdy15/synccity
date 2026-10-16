@@ -249,84 +249,162 @@ export class NetworkClient {
     }
   }
 
+  private smoothedState: StateSnapshot | null = null;
+  private lastSmoothTimeMs: number = performance.now();
+
   /**
-   * Interpolate world state ~100 ms behind server time
+   * Frame-rate independent dead-reckoning + exponential smoothing.
+   * Eliminates 100ms bucket-jump rubber-banding and per-frame GC allocations.
    */
-  public getInterpolatedState(): StateSnapshot | null {
+  public getInterpolatedState(localInput?: {
+    axisX: number;
+    axisZ: number;
+    throttle: number;
+    steer: number;
+    brake: boolean;
+  }): StateSnapshot | null {
     if (this.snapshots.length === 0) return null;
-    if (this.snapshots.length === 1) return this.snapshots[0];
+    const latest = this.snapshots[this.snapshots.length - 1];
 
-    const interpolationDelayMs = 100;
-    const targetTime = Date.now() - interpolationDelayMs;
+    const now = performance.now();
+    const dt = Math.min(0.1, Math.max(0.001, (now - this.lastSmoothTimeMs) * 0.001));
+    this.lastSmoothTimeMs = now;
 
-    // Find two snapshots surrounding targetTime
-    let older: StateSnapshot | null = null;
-    let newer: StateSnapshot | null = null;
-
-    for (let i = this.snapshots.length - 1; i >= 0; i--) {
-      if (this.snapshots[i].timeMs <= targetTime) {
-        older = this.snapshots[i];
-        newer = this.snapshots[i + 1] || older;
-        break;
+    if (!this.smoothedState) {
+      const initPlayers: Record<string, PlayerState> = {};
+      for (const [k, p] of Object.entries(latest.players)) initPlayers[k] = { ...p };
+      const initVehicles: Record<string, VehicleState> = {};
+      for (const [k, v] of Object.entries(latest.vehicles)) {
+        initVehicles[k] = { ...v, seats: [...v.seats] as [string, string] };
       }
+      this.smoothedState = {
+        timeMs: now,
+        players: initPlayers,
+        vehicles: initVehicles,
+        delivery: latest.delivery,
+        race: latest.race,
+      };
+      return this.smoothedState;
     }
 
-    if (!older || !newer || older === newer) {
-      return this.snapshots[this.snapshots.length - 1];
-    }
+    const posBlend = 1 - Math.exp(-16 * dt);
+    const yawBlend = 1 - Math.exp(-18 * dt);
 
-    const range = newer.timeMs - older.timeMs;
-    const alpha = range <= 0 ? 1 : Math.max(0, Math.min(1, (targetTime - older.timeMs) / range));
-
-    // Interpolate positions and slerp yaw
-    const lerp = (a: number, b: number) => a + (b - a) * alpha;
-    const lerpYaw = (a: number, b: number) => {
+    const lerpAngle = (a: number, b: number, t: number) => {
       let diff = b - a;
       while (diff < -Math.PI) diff += Math.PI * 2;
       while (diff > Math.PI) diff -= Math.PI * 2;
-      return a + diff * alpha;
+      return a + diff * t;
     };
 
-    const players: Record<string, PlayerState> = {};
-    for (const [id, np] of Object.entries(newer.players)) {
-      const op = older.players[id];
-      if (op && op.mode === np.mode && op.vehicleId === np.vehicleId) {
-        players[id] = {
-          ...np,
-          x: lerp(op.x, np.x),
-          y: lerp(op.y, np.y),
-          z: lerp(op.z, np.z),
-          yaw: lerpYaw(op.yaw, np.yaw),
-        };
-      } else {
-        players[id] = { ...np };
+    // 1. Update Vehicles with velocity dead-reckoning + authoritative convergence
+    const sVehicles = this.smoothedState.vehicles;
+    for (const id of Object.keys(sVehicles)) {
+      if (!latest.vehicles[id]) delete sVehicles[id];
+    }
+    for (const [id, nv] of Object.entries(latest.vehicles)) {
+      const sv = sVehicles[id];
+      if (!sv) {
+        sVehicles[id] = { ...nv, seats: [...nv.seats] as [string, string] };
+        continue;
       }
+
+      const isLocalDriver = nv.seats[0] === this.localPlayerId;
+      let predictedSpeed = nv.speed;
+      let predictedYaw = nv.yaw;
+
+      if (isLocalDriver && localInput) {
+        if (localInput.brake) {
+          predictedSpeed *= Math.max(0, 1 - 6 * dt);
+        } else if (localInput.throttle > 0) {
+          predictedSpeed = Math.min(LIMITS.forwardSpeed, predictedSpeed + localInput.throttle * 14 * dt);
+        } else if (localInput.throttle < 0) {
+          predictedSpeed = Math.max(-LIMITS.reverseSpeed, predictedSpeed + localInput.throttle * 10 * dt);
+        }
+        if (Math.abs(predictedSpeed) > 0.2) {
+          const dir = predictedSpeed >= 0 ? 1 : -1;
+          predictedYaw = sv.yaw - localInput.steer * 2.1 * dir * dt;
+        }
+      }
+
+      // Advance along current velocity vector (dead-reckoning)
+      sv.x += Math.sin(sv.yaw) * predictedSpeed * dt;
+      sv.z += Math.cos(sv.yaw) * predictedSpeed * dt;
+
+      // Smoothly pull toward authoritative server state
+      const errSq = (nv.x - sv.x) * (nv.x - sv.x) + (nv.z - sv.z) * (nv.z - sv.z);
+      if (errSq > 36) {
+        // Teleport if >6m out of sync
+        sv.x = nv.x;
+        sv.z = nv.z;
+        sv.yaw = nv.yaw;
+      } else {
+        sv.x += (nv.x - sv.x) * posBlend;
+        sv.z += (nv.z - sv.z) * posBlend;
+        sv.yaw = lerpAngle( isLocalDriver ? predictedYaw : sv.yaw, nv.yaw, yawBlend );
+      }
+      sv.y = nv.y;
+      sv.speed += (nv.speed - sv.speed) * posBlend;
+      sv.seats[0] = nv.seats[0];
+      sv.seats[1] = nv.seats[1];
     }
 
-    const vehicles: Record<string, VehicleState> = {};
-    for (const [id, nv] of Object.entries(newer.vehicles)) {
-      const ov = older.vehicles[id];
-      if (ov) {
-        vehicles[id] = {
-          ...nv,
-          x: lerp(ov.x, nv.x),
-          y: lerp(ov.y, nv.y),
-          z: lerp(ov.z, nv.z),
-          yaw: lerpYaw(ov.yaw, nv.yaw),
-          speed: lerp(ov.speed, nv.speed),
-        };
-      } else {
-        vehicles[id] = { ...nv };
+    // 2. Update Players with dead-reckoning + authoritative convergence
+    const sPlayers = this.smoothedState.players;
+    for (const id of Object.keys(sPlayers)) {
+      if (!latest.players[id]) delete sPlayers[id];
+    }
+    for (const [id, np] of Object.entries(latest.players)) {
+      const sp = sPlayers[id];
+      if (!sp || sp.mode !== np.mode || sp.vehicleId !== np.vehicleId) {
+        sPlayers[id] = { ...np };
+        continue;
       }
+
+      if (np.mode !== 'walking' && np.vehicleId && sVehicles[np.vehicleId]) {
+        // Lock seated players directly to the smoothed vehicle transform
+        const veh = sVehicles[np.vehicleId];
+        const sideOffset = np.seatIndex === 0 ? 0.55 : -0.55;
+        const sinY = Math.sin(veh.yaw);
+        const cosY = Math.cos(veh.yaw);
+        sp.x = veh.x + sideOffset * cosY - 0.1 * sinY;
+        sp.y = veh.y + 0.35;
+        sp.z = veh.z - sideOffset * sinY - 0.1 * cosY;
+        sp.yaw = veh.yaw;
+      } else {
+        if (id === this.localPlayerId && localInput) {
+          const mag = Math.hypot(localInput.axisX, localInput.axisZ);
+          if (mag > 0.05) {
+            const nx = localInput.axisX / Math.max(1, mag);
+            const nz = localInput.axisZ / Math.max(1, mag);
+            sp.x += nx * LIMITS.walkingSpeed * dt;
+            sp.z += nz * LIMITS.walkingSpeed * dt;
+          }
+        }
+        const errSq = (np.x - sp.x) * (np.x - sp.x) + (np.z - sp.z) * (np.z - sp.z);
+        if (errSq > 25) {
+          sp.x = np.x;
+          sp.z = np.z;
+        } else {
+          sp.x += (np.x - sp.x) * posBlend;
+          sp.z += (np.z - sp.z) * posBlend;
+        }
+        sp.y = np.y;
+        sp.yaw = lerpAngle(sp.yaw, np.yaw, yawBlend);
+      }
+
+      sp.displayName = np.displayName;
+      sp.connected = np.connected;
+      sp.mode = np.mode;
+      sp.vehicleId = np.vehicleId;
+      sp.seatIndex = np.seatIndex;
     }
 
-    return {
-      timeMs: targetTime,
-      players,
-      vehicles,
-      delivery: newer.delivery,
-      race: newer.race || older.race,
-    };
+    this.smoothedState.timeMs = now;
+    this.smoothedState.delivery = latest.delivery;
+    this.smoothedState.race = latest.race;
+
+    return this.smoothedState;
   }
 
   public sendInput(input: {

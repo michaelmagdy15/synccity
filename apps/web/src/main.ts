@@ -98,14 +98,14 @@ const roomParam =
   (window.location.hash.startsWith('#room=') ? window.location.hash.slice(6) : '');
 hud.showLobby(roomParam);
 
-// Input send timer at 20 Hz (50 ms)
+// Input send timer at 25 Hz (40 ms)
 let latestAxes = { axisX: 0, axisZ: 0, throttle: 0, steer: 0, brake: false };
 setInterval(() => {
   if (!network.localPlayerId) return;
   inputManager.cameraYaw = world.cameraFollow.currentYaw;
   latestAxes = inputManager.sample();
   network.sendInput(latestAxes);
-}, 1000 / LIMITS.inputHz);
+}, 40);
 
 // State trackers for Audio cues (Countdown, Laps, Checkpoints)
 let prevCountdownSec = -1;
@@ -113,9 +113,10 @@ let prevRaceStatus = 'idle';
 let prevLap = 1;
 let prevMode = 'walking';
 
-// FPS Measurement
+// FPS & HUD Throttle Timers
 let frameCount = 0;
 let fpsAccumTime = 0;
+let hudAccumTime = 0;
 let lastTime = performance.now();
 
 function animate(currentTime: number): void {
@@ -127,13 +128,19 @@ function animate(currentTime: number): void {
 
   frameCount++;
   fpsAccumTime += rawDt;
+  hudAccumTime += rawDt;
+
   if (fpsAccumTime >= 0.5) {
     hud.updateFPS(frameCount / fpsAccumTime);
     frameCount = 0;
     fpsAccumTime = 0;
   }
 
-  const state = network.getInterpolatedState();
+  // Sample inputs locally every frame for zero-latency dead-reckoning
+  inputManager.cameraYaw = world.cameraFollow.currentYaw;
+  latestAxes = inputManager.sample();
+
+  const state = network.getInterpolatedState(latestAxes);
   if (state) {
     const localPlayer = state.players[network.localPlayerId];
 
@@ -177,44 +184,47 @@ function animate(currentTime: number): void {
       }
       prevMode = localPlayer.mode;
 
-      // High-speed visual wind lines
-      if (speedLinesEl) {
-        const kmh = Math.abs(currentCarSpeed) * 3.6;
-        speedLinesEl.style.opacity = kmh > 42 ? `${Math.min(0.85, (kmh - 42) / 35)}` : '0';
-      }
+      // Throttle DOM & 2D Radar updates to ~15 Hz (every 66ms) to eliminate layout thrashing
+      if (hudAccumTime >= 0.066) {
+        hudAccumTime = 0;
 
-      // Race Audio Triggers (Countdown beeps & Lap Fanfare)
-      const race = state.race;
-      if (race) {
-        if (race.status === 'countdown' && race.countdownSeconds !== prevCountdownSec) {
-          prevCountdownSec = race.countdownSeconds;
-          audio.playCountdownBeep(race.countdownSeconds === 0);
-        } else if (race.status === 'racing' && prevRaceStatus === 'countdown') {
-          audio.playCountdownBeep(true);
+        if (speedLinesEl) {
+          const kmh = Math.abs(currentCarSpeed) * 3.6;
+          speedLinesEl.style.opacity = kmh > 42 ? `${Math.min(0.85, (kmh - 42) / 35)}` : '0';
         }
 
-        const localPart = race.participants[localPlayer.id];
-        if (localPart) {
-          if (localPart.currentLap > prevLap) {
-            prevLap = localPart.currentLap;
-            audio.playLapFanfare();
-          } else if (race.status !== 'racing') {
-            prevLap = 1;
+        const race = state.race;
+        if (race) {
+          if (race.status === 'countdown' && race.countdownSeconds !== prevCountdownSec) {
+            prevCountdownSec = race.countdownSeconds;
+            audio.playCountdownBeep(race.countdownSeconds === 0);
+          } else if (race.status === 'racing' && prevRaceStatus === 'countdown') {
+            audio.playCountdownBeep(true);
           }
+
+          const localPart = race.participants[localPlayer.id];
+          if (localPart) {
+            if (localPart.currentLap > prevLap) {
+              prevLap = localPart.currentLap;
+              audio.playLapFanfare();
+            } else if (race.status !== 'racing') {
+              prevLap = 1;
+            }
+          }
+          prevRaceStatus = race.status;
         }
-        prevRaceStatus = race.status;
+
+        hud.updateGameHUD({
+          roomId: network.roomId,
+          localPlayer,
+          nearbyVehicle,
+          carSpeed: currentCarSpeed,
+          delivery: state.delivery,
+          race: state.race,
+        });
+
+        radar.render(state, network.localPlayerId, currentTime * 0.001);
       }
-
-      hud.updateGameHUD({
-        roomId: network.roomId,
-        localPlayer,
-        nearbyVehicle,
-        carSpeed: currentCarSpeed,
-        delivery: state.delivery,
-        race: state.race,
-      });
-
-      radar.render(state, network.localPlayerId, currentTime * 0.001);
     }
 
     world.update(state, network.localPlayerId, dt);

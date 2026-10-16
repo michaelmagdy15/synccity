@@ -3,6 +3,7 @@ import {
   CITY_BOUNDS,
   CITY_ROADS,
   RACE_CIRCUIT,
+  SPEED_BOOST_PADS,
 } from '@synccity/shared/world';
 import type { StateSnapshot } from '../network/NetworkClient.js';
 
@@ -65,8 +66,8 @@ export class Radar {
     }
 
     // 3. Grand Prix Circuit Loop Line
-    ctx.strokeStyle = 'rgba(115, 230, 245, 0.3)';
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = 'rgba(115, 230, 245, 0.35)';
+    ctx.lineWidth = 1.3;
     ctx.setLineDash([2, 2]);
     ctx.beginPath();
     RACE_CIRCUIT.forEach((gate, idx) => {
@@ -77,6 +78,13 @@ export class Radar {
     ctx.closePath();
     ctx.stroke();
     ctx.setLineDash([]);
+
+    // 3b. Speed Boost Pads (DashCraft-style green turbo markers)
+    ctx.fillStyle = '#00ff88';
+    for (const pad of SPEED_BOOST_PADS) {
+      const bp = this.worldToRadar(pad.x, pad.z);
+      ctx.fillRect(bp.x - 1, bp.y - 1, 2, 2);
+    }
 
     // 4. Checkpoint Gates
     const isRacing = state.race?.status === 'racing';

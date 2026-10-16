@@ -1,7 +1,7 @@
 :root {
   --bg-color: #0d0821;
-  --panel-bg: rgba(18, 11, 36, 0.82);
-  --panel-border: rgba(115, 230, 245, 0.32);
+  --panel-bg: rgba(16, 10, 34, 0.92);
+  --panel-border: rgba(115, 230, 245, 0.35);
   --violet: #8b4ddb;
   --magenta: #f26cda;
   --cyan: #73e6f5;
@@ -120,7 +120,6 @@ html, body {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   padding: 4px 10px;
-  backdrop-filter: blur(8px);
   pointer-events: auto;
   display: flex;
   align-items: center;
@@ -390,7 +389,6 @@ html, body {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   padding: 6px 10px;
-  backdrop-filter: blur(10px);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
   display: flex;
   flex-direction: column;
@@ -485,10 +483,9 @@ html, body {
   left: calc(var(--safe-left) + 112px);
   width: 280px;
   max-height: calc(100dvh - 110px);
-  background: rgba(16, 10, 34, 0.95);
+  background: rgba(16, 10, 34, 0.96);
   border: 1px solid var(--cyan);
   border-radius: 12px;
-  backdrop-filter: blur(12px);
   display: flex;
   flex-direction: column;
   pointer-events: auto;
@@ -736,8 +733,7 @@ html, body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at center, rgba(22, 12, 48, 0.78), rgba(10, 6, 24, 0.94));
-  backdrop-filter: blur(8px);
+  background: radial-gradient(circle at center, rgba(22, 12, 48, 0.86), rgba(10, 6, 24, 0.96));
   display: flex;
   align-items: center;
   justify-content: center;
