@@ -59,7 +59,7 @@ export const SPAWN_POINTS: SpawnPoint[] = [
 ];
 
 export const INITIAL_VEHICLES = [
-  // Grid slots right near Start Line
+  // Grid slots right near Start Line (Open-Wheel Formula & Synthwave GT Cars)
   { id: 'veh_1', x: 12, y: 0, z: 24, yaw: 0, speed: 0 },
   { id: 'veh_2', x: -12, y: 0, z: 24, yaw: 0, speed: 0 },
   // North plaza curbs
@@ -68,6 +68,51 @@ export const INITIAL_VEHICLES = [
   // District depots
   { id: 'veh_5', x: 80, y: 0, z: -100, yaw: -Math.PI / 2, speed: 0 },
   { id: 'veh_6', x: -80, y: 0, z: 100, yaw: Math.PI / 2, speed: 0 },
+  // Flyable Twin-Seat Stunt Planes (Parked on East/West Grand Avenue Runway)
+  { id: 'veh_plane_1', x: 22, y: 0, z: 0, yaw: Math.PI / 2, speed: 0 },
+  { id: 'veh_plane_2', x: -22, y: 0, z: 0, yaw: -Math.PI / 2, speed: 0 },
+];
+
+export function isPlaneVehicle(vehicleId: string): boolean {
+  return vehicleId.includes('plane');
+}
+
+export interface SkyRingDef {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  radius: number;
+}
+
+export const SKY_RINGS: SkyRingDef[] = [
+  { id: 'sky_north', x: 0, y: 20, z: -85, yaw: 0, radius: 7.5 },
+  { id: 'sky_east', x: 95, y: 24, z: 0, yaw: Math.PI / 2, radius: 7.5 },
+  { id: 'sky_south', x: 0, y: 20, z: 85, yaw: 0, radius: 7.5 },
+  { id: 'sky_west', x: -95, y: 24, z: 0, yaw: Math.PI / 2, radius: 7.5 },
+  { id: 'sky_plaza_high', x: 0, y: 28, z: 0, yaw: Math.PI / 4, radius: 8.5 },
+  { id: 'sky_docks_arch', x: 85, y: 18, z: -85, yaw: -Math.PI / 4, radius: 7.5 },
+];
+
+export interface MysteryBoxDef {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const MYSTERY_BOX_SPOTS: MysteryBoxDef[] = [
+  { id: 'box_start_L', x: -5, y: 1.2, z: 45 },
+  { id: 'box_start_R', x: 5, y: 1.2, z: 45 },
+  { id: 'box_south_1', x: -30, y: 1.2, z: 100 },
+  { id: 'box_west_1', x: -100, y: 1.2, z: 0 },
+  { id: 'box_north_1', x: 0, y: 1.2, z: -100 },
+  { id: 'box_east_1', x: 100, y: 1.2, z: -60 },
+  { id: 'box_plaza_N', x: 0, y: 1.2, z: -18 },
+  { id: 'box_plaza_S', x: 0, y: 1.2, z: 18 },
+  { id: 'box_sky_1', x: 0, y: 20, z: -45 },
+  { id: 'box_sky_2', x: 0, y: 20, z: 45 },
 ];
 
 export const CHECKPOINTS = {
@@ -318,61 +363,99 @@ export function stepVehicleKinematics(
   brake: boolean,
   dt: number,
   colliders: BoxCollider[] = CITY_COLLIDERS,
-  bounds: Bounds = CITY_BOUNDS
+  bounds: Bounds = CITY_BOUNDS,
+  isPlane: boolean = false
 ): { x: number; y: number; z: number; yaw: number; speed: number } {
   // Clamp delta time to avoid large jumps
   const clampedDt = Math.max(0.001, Math.min(Number.isFinite(dt) ? dt : 0.016, 0.1));
   const safeThrottle = Number.isFinite(throttle) ? Math.max(-1, Math.min(1, throttle)) : 0;
   const safeSteer = Number.isFinite(steer) ? Math.max(-1, Math.min(1, steer)) : 0;
-  const carRadius = 1.3;
+  const carRadius = isPlane ? 1.5 : 1.3;
 
   let speed = Number.isFinite(state.speed) ? state.speed : 0;
   let yaw = Number.isFinite(state.yaw) ? state.yaw : 0;
+  let nextY = Number.isFinite(state.y) ? Math.max(0, state.y) : 0;
 
-  // 1. Acceleration / Braking
-  const accelRate = 13.5;    // m/s^2 forward (snappier arcade launch)
-  const reverseRate = 7.5;   // m/s^2 reverse
-  const brakeRate = 24.0;    // m/s^2 brake
-  const frictionRate = 4.0;  // m/s^2 rolling friction
+  // 1. Acceleration / Braking (Planes have higher top airspeed: 28 m/s = 101 km/h)
+  const maxForwardSpeed = isPlane ? 28.0 : LIMITS.forwardSpeed;
+  const accelRate = isPlane ? 16.5 : 13.5;
+  const reverseRate = 7.5;
+  const brakeRate = isPlane && nextY > 0.5 ? 14.0 : 24.0;
+  const frictionRate = isPlane && nextY > 0.5 ? 2.0 : 4.0;
 
   if (brake) {
     if (speed > 0) {
-      speed = Math.max(0, speed - brakeRate * clampedDt);
+      speed = Math.max(isPlane && nextY > 1.5 ? 8.0 : 0, speed - brakeRate * clampedDt);
     } else if (speed < 0) {
       speed = Math.min(0, speed + brakeRate * clampedDt);
     }
   } else if (safeThrottle > 0.05) {
     if (speed < 0) {
       speed += (brakeRate + accelRate) * clampedDt * safeThrottle;
-    } else if (speed > LIMITS.forwardSpeed) {
+    } else if (speed > maxForwardSpeed) {
       // Smoothly decay turbo overspeed back toward normal max speed
-      speed = Math.max(LIMITS.forwardSpeed, speed - 5.5 * clampedDt);
+      speed = Math.max(maxForwardSpeed, speed - 5.5 * clampedDt);
     } else {
-      speed = Math.min(LIMITS.forwardSpeed, speed + accelRate * clampedDt * safeThrottle);
+      speed = Math.min(maxForwardSpeed, speed + accelRate * clampedDt * safeThrottle);
     }
   } else if (safeThrottle < -0.05) {
-    if (speed > 0) {
+    if (isPlane && nextY > 0.5) {
+      // In mid-air, reverse throttle slows airspeed gently & descends
+      speed = Math.max(8.0, speed - 10.0 * clampedDt * Math.abs(safeThrottle));
+    } else if (speed > 0) {
       speed -= (brakeRate + reverseRate) * clampedDt * Math.abs(safeThrottle);
     } else {
       speed = Math.max(-LIMITS.reverseSpeed, speed - reverseRate * clampedDt * Math.abs(safeThrottle));
     }
   } else {
-    // Rolling friction
+    // Rolling / air drag friction
     if (speed > 0) {
-      speed = Math.max(0, speed - frictionRate * clampedDt);
+      const minAirSpeed = isPlane && nextY > 1.5 ? 10.0 : 0;
+      speed = Math.max(minAirSpeed, speed - frictionRate * clampedDt);
     } else if (speed < 0) {
       speed = Math.min(0, speed + frictionRate * clampedDt);
     }
   }
 
+  // 1b. Plane 3D Altitude (Takeoff, Climb, Cruise, and Landing)
+  if (isPlane) {
+    if (!brake && safeThrottle > 0.1 && speed >= 7.5) {
+      // Lift off and climb up to 30m cruising altitude
+      const climbRate = 8.5 * safeThrottle * Math.min(1, (speed - 6.0) / 10.0);
+      nextY = Math.min(30.0, nextY + climbRate * clampedDt);
+    } else if (brake || safeThrottle < -0.1) {
+      // Active descent / landing
+      nextY = Math.max(0, nextY - 10.5 * clampedDt);
+    } else if (nextY > 0) {
+      // Gentle glide descent when coasting
+      nextY = Math.max(0, nextY - 2.2 * clampedDt);
+    }
+
+    // Sky Ring Boosters for Planes
+    if (nextY > 6.0) {
+      for (let i = 0; i < SKY_RINGS.length; i++) {
+        const ring = SKY_RINGS[i];
+        const dx = state.x - ring.x;
+        const dy = nextY - ring.y;
+        const dz = state.z - ring.z;
+        if (dx * dx + dy * dy + dz * dz <= ring.radius * ring.radius) {
+          speed = Math.max(speed, maxForwardSpeed * 1.35);
+          break;
+        }
+      }
+    }
+  } else {
+    nextY = 0;
+  }
+
   // DashCraft-style Track Booster Pads: driving over a pad surges speed to 1.38x max speed
-  if (!brake && speed > 1.5 && safeThrottle >= 0) {
+  if (!brake && speed > 1.5 && safeThrottle >= 0 && nextY < 2.5) {
     for (let i = 0; i < SPEED_BOOST_PADS.length; i++) {
       const pad = SPEED_BOOST_PADS[i];
       const dx = state.x - pad.x;
       const dz = state.z - pad.z;
       if (dx * dx + dz * dz <= pad.radius * pad.radius) {
-        speed = Math.max(speed, LIMITS.forwardSpeed * 1.38);
+        speed = Math.max(speed, maxForwardSpeed * 1.38);
         break;
       }
     }
@@ -382,7 +465,7 @@ export function stepVehicleKinematics(
   if (Math.abs(speed) > 0.1 && Math.abs(safeSteer) > 0.02) {
     const speedFactor = Math.min(1.0, Math.abs(speed) / 6.0);
     const steerDir = speed >= 0 ? 1 : -1;
-    const maxTurnRate = 2.15; // rad/s
+    const maxTurnRate = isPlane && nextY > 1.0 ? 1.85 : 2.15; // rad/s
     // Screen right is -X, screen left is +X when facing +Z
     yaw -= safeSteer * maxTurnRate * speedFactor * steerDir * clampedDt;
 
@@ -401,7 +484,21 @@ export function stepVehicleKinematics(
   const targetX = state.x + vx * clampedDt;
   const targetZ = state.z + vz * clampedDt;
 
-  const resolved = resolveCircleCollision(state.x, state.z, targetX, targetZ, carRadius, colliders, bounds);
+  // Planes flying above a building's roof height pass cleanly over it!
+  const activeColliders =
+    isPlane && nextY > 2.5
+      ? colliders.filter((c) => nextY < c.height + 1.0)
+      : colliders;
+
+  const resolved = resolveCircleCollision(
+    state.x,
+    state.z,
+    targetX,
+    targetZ,
+    carRadius,
+    activeColliders,
+    bounds
+  );
 
   // If vehicle hit an obstacle and was blocked, kill speed
   if (Math.abs(resolved.x - targetX) > 0.01 || Math.abs(resolved.z - targetZ) > 0.01) {
@@ -410,7 +507,7 @@ export function stepVehicleKinematics(
 
   return {
     x: resolved.x,
-    y: 0,
+    y: nextY,
     z: resolved.z,
     yaw,
     speed,

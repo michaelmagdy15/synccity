@@ -48,6 +48,20 @@ const hud = new HUD(uiRoot, {
       console.warn('Exit vehicle rejected:', res.code);
     }
   },
+  onQuickSpawnVehicle: async (kind) => {
+    audio.unlock();
+    const res = await network.quickSpawnVehicle(kind);
+    if (res.ok) {
+      audio.playDoorClunk();
+    }
+  },
+  onUseItem: async () => {
+    audio.unlock();
+    const res = await network.useItem();
+    if (res.ok) {
+      audio.playLapFanfare();
+    }
+  },
   onStartRace: async () => {
     audio.unlock();
     await network.startRace();
@@ -67,6 +81,29 @@ inputManager.bindTouchElements(hud.touchBindings);
 
 inputManager.onInteract(() => {
   hud.handleInteract();
+});
+
+// Keyboard shortcuts: [C] Spawn Car, [P] Spawn Plane, [F] Use Powerup Item
+window.addEventListener('keydown', (e) => {
+  if (document.activeElement?.tagName === 'INPUT') return;
+  if (e.repeat) return;
+  const code = e.code;
+  if (code === 'KeyC') {
+    audio.unlock();
+    network.quickSpawnVehicle('car').then((res) => {
+      if (res.ok) audio.playDoorClunk();
+    });
+  } else if (code === 'KeyP') {
+    audio.unlock();
+    network.quickSpawnVehicle('plane').then((res) => {
+      if (res.ok) audio.playDoorClunk();
+    });
+  } else if (code === 'KeyF') {
+    audio.unlock();
+    network.useItem().then((res) => {
+      if (res.ok) audio.playLapFanfare();
+    });
+  }
 });
 
 // Network event listeners
@@ -103,11 +140,12 @@ let latestAxes = { axisX: 0, axisZ: 0, throttle: 0, steer: 0, brake: false };
 let lastSentAxes = { axisX: 0, axisZ: 0, throttle: 0, steer: 0, brake: false };
 let lastInputSendMs = 0;
 
-// State trackers for Audio cues (Countdown, Laps, Checkpoints)
+// State trackers for Audio cues (Countdown, Laps, Checkpoints, Cash)
 let prevCountdownSec = -1;
 let prevRaceStatus = 'idle';
 let prevLap = 1;
 let prevMode = 'walking';
+let prevCash = 100;
 
 // FPS & HUD Throttle Timers
 let frameCount = 0;
@@ -158,8 +196,15 @@ function animate(currentTime: number): void {
 
     let nearbyVehicle: { id: string; availableSeat: 0 | 1 | null } | null = null;
     let currentCarSpeed = 0;
+    let currentVehicleAlt = 0;
 
     if (localPlayer) {
+      const cashNow = localPlayer.cash ?? 100;
+      if (cashNow > prevCash) {
+        audio.playLapFanfare();
+      }
+      prevCash = cashNow;
+
       if (localPlayer.mode === 'walking') {
         if (prevMode !== 'walking') {
           audio.stopEngine();
@@ -183,6 +228,7 @@ function animate(currentTime: number): void {
         const drivenCar = state.vehicles[localPlayer.vehicleId];
         if (drivenCar) {
           currentCarSpeed = drivenCar.speed;
+          currentVehicleAlt = drivenCar.y;
         }
         if (prevMode === 'walking') {
           audio.startEngine();
@@ -191,7 +237,9 @@ function animate(currentTime: number): void {
         audio.updateEngine(kmh, latestAxes.throttle);
 
         const isSliding =
-          kmh > 26 && (Math.abs(latestAxes.steer) > 0.55 || latestAxes.brake);
+          currentVehicleAlt < 1.0 &&
+          kmh > 26 &&
+          (Math.abs(latestAxes.steer) > 0.55 || latestAxes.brake);
         audio.updateTireScreech(isSliding, Math.min(1, kmh / 65));
       }
       prevMode = localPlayer.mode;
@@ -229,8 +277,10 @@ function animate(currentTime: number): void {
         hud.updateGameHUD({
           roomId: network.roomId,
           localPlayer,
+          allPlayers: state.players,
           nearbyVehicle,
           carSpeed: currentCarSpeed,
+          vehicleAltitude: currentVehicleAlt,
           delivery: state.delivery,
           race: state.race,
         });

@@ -11,6 +11,8 @@ export interface HUDActions {
   onSendChat: (text: string) => Promise<void>;
   onEnterVehicle: (vehicleId: string, seatIndex: 0 | 1) => Promise<void>;
   onExitVehicle: () => Promise<void>;
+  onQuickSpawnVehicle?: (kind: 'car' | 'plane') => Promise<void>;
+  onUseItem?: () => Promise<void>;
   onStartRace?: () => Promise<void>;
   onToggleAudio?: () => boolean;
   onChatFocusChange: (focused: boolean) => void;
@@ -61,6 +63,8 @@ export class HUD {
   private audioBtnEl!: HTMLElement;
   private fullscreenBtnEl!: HTMLElement;
 
+  private cashPillEl!: HTMLElement;
+  private itemBtnEl!: HTMLElement;
   private rolePillEl!: HTMLElement;
   private speedDisplayEl!: HTMLElement;
   private topExitBtnEl!: HTMLElement;
@@ -71,6 +75,8 @@ export class HUD {
   private raceLapBadgeEl!: HTMLElement;
   private raceTimerEl!: HTMLElement;
   private btnStartRaceEl!: HTMLElement;
+  private btnSpawnCarEl!: HTMLElement;
+  private btnSpawnPlaneEl!: HTMLElement;
   private raceCountdownOverlayEl!: HTMLElement;
   private countdownTextEl!: HTMLElement;
   private raceScoreboardEl!: HTMLElement;
@@ -116,18 +122,22 @@ export class HUD {
           <button class="icon-btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
         </div>
 
-        <!-- Center: Unified Grand Prix & Mission Strip -->
+        <!-- Center: Unified Grand Prix, Quick Car/Plane Spawn & Objective Strip -->
         <div class="hud-panel hud-bar-center">
           <span class="race-lap-badge" id="race-lap-badge">GRAND PRIX</span>
           <span class="race-timer" id="race-timer">READY</span>
           <button class="btn btn-primary btn-xs" id="btn-start-race">🏁 Race</button>
+          <button class="btn btn-secondary btn-xs" id="btn-spawn-car" title="Instant Car [C]">🏎️ Car</button>
+          <button class="btn btn-accent btn-xs" id="btn-spawn-plane" title="Instant Plane [P]">✈️ Plane</button>
           <span class="mission-divider">|</span>
-          <span class="delivery-text" id="delivery-text">Co-op: Board car at Docks</span>
+          <span class="delivery-text" id="delivery-text">🎯 Follow 3D Arrow to Heist Pickup</span>
           <span class="hud-creator-pill">★ BUILT BY MOTATO &amp; MARMOURA</span>
         </div>
 
-        <!-- Right: Digital Speedometer & Role -->
+        <!-- Right: Cash, Powerup Item, Digital Speedometer & Role -->
         <div class="hud-panel hud-bar-right">
+          <span class="cash-pill" id="cash-pill">💰 $100</span>
+          <button class="btn btn-item btn-xs" id="btn-use-item" style="display: none;">🔥 NITRO [F]</button>
           <div class="speedo-box" id="speed-display-wrap" style="display: none;">
             <span class="speed-value" id="speed-display">0</span>
             <span class="speed-unit">KM/H</span>
@@ -271,6 +281,8 @@ export class HUD {
     this.audioBtnEl = this.root.querySelector('#btn-audio-toggle')!;
     this.fullscreenBtnEl = this.root.querySelector('#btn-fullscreen')!;
 
+    this.cashPillEl = this.root.querySelector('#cash-pill')!;
+    this.itemBtnEl = this.root.querySelector('#btn-use-item')!;
     this.rolePillEl = this.root.querySelector('#role-pill')!;
     this.speedDisplayEl = this.root.querySelector('#speed-display')!;
     this.topExitBtnEl = this.root.querySelector('#btn-top-exit')!;
@@ -280,6 +292,8 @@ export class HUD {
     this.raceLapBadgeEl = this.root.querySelector('#race-lap-badge')!;
     this.raceTimerEl = this.root.querySelector('#race-timer')!;
     this.btnStartRaceEl = this.root.querySelector('#btn-start-race')!;
+    this.btnSpawnCarEl = this.root.querySelector('#btn-spawn-car')!;
+    this.btnSpawnPlaneEl = this.root.querySelector('#btn-spawn-plane')!;
     this.raceCountdownOverlayEl = this.root.querySelector('#race-countdown-overlay')!;
     this.countdownTextEl = this.root.querySelector('#countdown-text')!;
     this.raceScoreboardEl = this.root.querySelector('#race-scoreboard')!;
@@ -381,6 +395,19 @@ export class HUD {
           this.btnStartRaceEl.removeAttribute('disabled');
         }
       }
+    });
+
+    // Quick-Spawn Car & Plane Buttons
+    this.btnSpawnCarEl.addEventListener('click', () => {
+      this.actions.onQuickSpawnVehicle?.('car');
+    });
+    this.btnSpawnPlaneEl.addEventListener('click', () => {
+      this.actions.onQuickSpawnVehicle?.('plane');
+    });
+
+    // Use Powerup Item Button
+    this.itemBtnEl.addEventListener('click', () => {
+      this.actions.onUseItem?.();
     });
 
     // Top Exit Vehicle Button
@@ -539,8 +566,10 @@ export class HUD {
   public updateGameHUD(data: {
     roomId: string;
     localPlayer: PlayerState;
+    allPlayers?: Record<string, PlayerState>;
     nearbyVehicle: { id: string; availableSeat: 0 | 1 | null } | null;
     carSpeed?: number;
+    vehicleAltitude?: number;
     delivery: DeliveryState;
     race?: RaceState;
   }): void {
@@ -551,9 +580,37 @@ export class HUD {
     const speedWrap = this.root.querySelector<HTMLElement>('#speed-display-wrap')!;
     const enterBtn = this.touchBindings.enterBtn;
 
-    // Role & Mode-Adaptive Controls (Walking vs Driving)
+    // Live Cash Counter
+    const cashVal = data.localPlayer.cash ?? 100;
+    this.cashPillEl.textContent = `💰 $${cashVal.toLocaleString()}`;
+
+    // Active Powerup Item Button (SmashKarts style)
+    const heldItem = data.localPlayer.heldItem || '';
+    if (heldItem) {
+      this.itemBtnEl.style.display = 'inline-flex';
+      const itemLabel =
+        heldItem === 'rocket'
+          ? '🚀 ROCKET [F]'
+          : heldItem === 'emp'
+          ? '⚡ EMP [F]'
+          : '🔥 NITRO [F]';
+      this.itemBtnEl.textContent = itemLabel;
+    } else {
+      this.itemBtnEl.style.display = 'none';
+    }
+
+    const isPlane = (data.localPlayer.vehicleId || '').includes('plane');
+    const altMeters = Math.round(data.vehicleAltitude || 0);
+
+    // Role & Mode-Adaptive Controls (Walking vs Driving vs Flying)
     this.rolePillEl.className = `role-pill ${data.localPlayer.mode}`;
-    this.rolePillEl.textContent = data.localPlayer.mode.toUpperCase();
+    if (data.localPlayer.mode === 'driver') {
+      this.rolePillEl.textContent = isPlane ? `✈️ PILOT · ${altMeters}M` : '🏎️ DRIVER';
+    } else if (data.localPlayer.mode === 'passenger') {
+      this.rolePillEl.textContent = isPlane ? `✈️ CO-PILOT` : '💺 PASSENGER';
+    } else {
+      this.rolePillEl.textContent = '🚶 WALKING';
+    }
 
     if (data.localPlayer.mode === 'driver') {
       speedWrap.style.display = 'inline-flex';
@@ -583,15 +640,21 @@ export class HUD {
       speedWrap.style.display = 'none';
       this.topExitBtnEl.style.display = 'none';
 
-      // Walking mode: Virtual Analog Stick + Contextual Enter Car button
+      // Walking mode: Virtual Analog Stick + Contextual Enter Car/Plane button
       this.walkingControlsEl.style.display = 'flex';
       this.drivingLeftControlsEl.style.display = 'none';
       this.drivingRightControlsEl.style.display = 'none';
 
       if (enterBtn) {
         if (data.nearbyVehicle && data.nearbyVehicle.availableSeat !== null) {
+          const isNearbyPlane = data.nearbyVehicle.id.includes('plane');
           enterBtn.style.display = 'flex';
-          enterBtn.textContent = data.nearbyVehicle.availableSeat === 0 ? '🚗 DRIVE' : '💺 RIDE';
+          enterBtn.textContent =
+            data.nearbyVehicle.availableSeat === 0
+              ? isNearbyPlane
+                ? '✈️ FLY'
+                : '🚗 DRIVE'
+              : '💺 RIDE';
         } else {
           enterBtn.style.display = 'none';
         }
@@ -601,23 +664,33 @@ export class HUD {
     // Proximity Toast (Walking only, non-obstructive)
     if (data.localPlayer.mode === 'walking' && data.nearbyVehicle && data.nearbyVehicle.availableSeat !== null) {
       this.interactToastEl.style.display = 'block';
-      const roleText = data.nearbyVehicle.availableSeat === 0 ? 'Drive' : 'Ride as Passenger';
-      this.toastTextEl.textContent = `Tap 🚗 or press [E] to ${roleText}`;
+      const isNearbyPlane = data.nearbyVehicle.id.includes('plane');
+      const roleText =
+        data.nearbyVehicle.availableSeat === 0
+          ? isNearbyPlane
+            ? 'Fly Stunt Plane (Hold GAS to Takeoff!)'
+            : 'Drive Supercar'
+          : 'Ride as Co-Pilot';
+      this.toastTextEl.textContent = `Tap Button or press [E] to ${roleText}`;
     } else {
       this.interactToastEl.style.display = 'none';
     }
 
-    // Compact Delivery Text
+    // Dynamic Objective & GPS Distance Banner
     const deliv = data.delivery;
-    if (deliv.phase === 'available') {
-      this.deliveryTextEl.textContent = 'Co-op: 2 players board at Docks';
+    if (isPlane && altMeters > 4) {
+      this.deliveryTextEl.textContent = '✈️ Fly through Gold Sky Rings (+$500) | Hold BRAKE to land';
+    } else if (deliv.phase === 'available') {
+      const dist = Math.round(Math.hypot(80 - data.localPlayer.x, -100 - data.localPlayer.z));
+      this.deliveryTextEl.textContent = `🎯 Heist Pickup at Docks (${dist}m) · Solo +$1K / Co-op +$2.5K`;
     } else if (deliv.phase === 'active') {
-      this.deliveryTextEl.textContent = 'Co-op Active: Drive to City Hall!';
+      const dist = Math.round(Math.hypot(-80 - data.localPlayer.x, 100 - data.localPlayer.z));
+      this.deliveryTextEl.textContent = `🚨 DELIVER CARGO TO CITY HALL (${dist}m) FOR PAYOUT!`;
     } else {
-      this.deliveryTextEl.textContent = 'Co-op Delivered! +Bonus';
+      this.deliveryTextEl.textContent = '💰 HEIST DELIVERED! Next drop spawning...';
     }
 
-    // Grand Prix Racing HUD & Countdown
+    // Grand Prix Racing HUD & Always-On Live Standings Leaderboard
     const race = data.race;
     if (race) {
       if (race.status === 'countdown') {
@@ -645,14 +718,15 @@ export class HUD {
         this.raceLapBadgeEl.className = 'race-lap-badge';
         this.raceTimerEl.textContent = 'READY';
         this.btnStartRaceEl.style.display = 'inline-flex';
-        this.btnStartRaceEl.textContent = '🏁 Start Race';
+        this.btnStartRaceEl.textContent = '🏁 Race';
       }
 
+      this.raceScoreboardEl.style.display = 'flex';
+      const suffix = this.isScoreboardCollapsed ? '▸' : '▾';
+
       if (race.status === 'racing' || race.status === 'finished') {
-        this.raceScoreboardEl.style.display = 'flex';
-        const suffix = this.isScoreboardCollapsed ? '▸' : '▾';
         this.scoreboardStatusEl.textContent =
-          race.status === 'finished' ? `RESULTS ${suffix}` : `LIVE ${suffix}`;
+          race.status === 'finished' ? `RESULTS ${suffix}` : `RACE ${suffix}`;
 
         const parts = Object.values(race.participants).sort((a, b) => {
           if (a.finished && !b.finished) return -1;
@@ -662,7 +736,7 @@ export class HUD {
         });
 
         this.scoreboardEntriesEl.innerHTML = parts
-          .slice(0, 4)
+          .slice(0, 5)
           .map((p, idx) => {
             const isLocal = p.playerId === data.localPlayer.id;
             const rankLabel = p.finished ? `#${p.rank}` : `#${idx + 1}`;
@@ -680,12 +754,34 @@ export class HUD {
             `;
           })
           .join('');
-      } else {
-        this.raceScoreboardEl.style.display = 'none';
+      } else if (data.allPlayers) {
+        // Show Syndicate Cash Leaderboard when not in an active race
+        this.scoreboardStatusEl.textContent = `CASH ${suffix}`;
+        const richList = Object.values(data.allPlayers)
+          .filter((p) => p.connected)
+          .sort((a, b) => (b.cash || 0) - (a.cash || 0));
+
+        this.scoreboardEntriesEl.innerHTML = richList
+          .slice(0, 5)
+          .map((p, idx) => {
+            const isLocal = p.id === data.localPlayer.id;
+            const icon = (p.vehicleId || '').includes('plane')
+              ? '✈️'
+              : p.mode === 'driver'
+              ? '🏎️'
+              : '🚶';
+            return `
+              <div class="scoreboard-row ${isLocal ? 'local' : ''}">
+                <span class="sb-rank">#${idx + 1}</span>
+                <span class="sb-name">${icon} ${p.displayName || 'Driver'}</span>
+                <span class="sb-time">$${(p.cash ?? 100).toLocaleString()}</span>
+              </div>
+            `;
+          })
+          .join('');
       }
     } else {
       this.raceCountdownOverlayEl.style.display = 'none';
-      this.raceScoreboardEl.style.display = 'none';
     }
   }
 

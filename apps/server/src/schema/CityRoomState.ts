@@ -14,6 +14,8 @@ export const PlayerSchema = schema({
   seatIndex: t.number().default(-1),
   inputEpoch: t.number().default(1),
   lastInputSeq: t.number().default(0),
+  cash: t.number().default(0),
+  heldItem: t.string().default(''),
 });
 export type PlayerSchema = SchemaType<typeof PlayerSchema>;
 

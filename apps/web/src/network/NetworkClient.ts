@@ -16,6 +16,7 @@ import {
   CITY_BOUNDS,
   CITY_COLLIDERS,
   getSeatWorldTransform,
+  isPlaneVehicle,
   resolveCircleCollision,
   stepVehicleKinematics,
 } from '@synccity/shared/world';
@@ -196,6 +197,8 @@ export class NetworkClient {
           seatIndex: p.seatIndex,
           inputEpoch: p.inputEpoch,
           lastInputSeq: p.lastInputSeq,
+          cash: p.cash || 0,
+          heldItem: p.heldItem || '',
         };
 
         if (p.id === this.localPlayerId) {
@@ -324,7 +327,7 @@ export class NetworkClient {
       return a + diff * t;
     };
 
-    // 1. Update Vehicles
+    // 1. Update Vehicles & Planes
     const sVehicles = this.smoothedState.vehicles;
     for (const id of Object.keys(sVehicles)) {
       if (!latest.vehicles[id]) delete sVehicles[id];
@@ -337,9 +340,10 @@ export class NetworkClient {
       }
 
       const isLocalDriver = nv.seats[0] === this.localPlayerId;
+      const isPlane = isPlaneVehicle(id);
 
       if (isLocalDriver && localInput) {
-        // Step local vehicle with the exact shared deterministic kinematics at render FPS
+        // Step local vehicle/plane with the exact shared deterministic kinematics at render FPS
         const stepped = stepVehicleKinematics(
           sv,
           localInput.throttle,
@@ -347,10 +351,11 @@ export class NetworkClient {
           localInput.brake,
           dt,
           CITY_COLLIDERS,
-          CITY_BOUNDS
+          CITY_BOUNDS,
+          isPlane
         );
         sv.x = stepped.x;
-        sv.y = 0;
+        sv.y = stepped.y;
         sv.z = stepped.z;
         sv.yaw = stepped.yaw;
         sv.speed = stepped.speed;
@@ -365,7 +370,8 @@ export class NetworkClient {
                 localInput.brake,
                 pktAgeSec,
                 CITY_COLLIDERS,
-                CITY_BOUNDS
+                CITY_BOUNDS,
+                isPlane
               )
             : nv;
 
@@ -374,30 +380,33 @@ export class NetworkClient {
           (authProjected.z - sv.z) * (authProjected.z - sv.z);
         if (errSq > 36) {
           sv.x = authProjected.x;
+          sv.y = authProjected.y;
           sv.z = authProjected.z;
           sv.yaw = authProjected.yaw;
           sv.speed = authProjected.speed;
         } else {
           sv.x += (authProjected.x - sv.x) * localDriftBlend;
+          sv.y += (authProjected.y - sv.y) * localDriftBlend;
           sv.z += (authProjected.z - sv.z) * localDriftBlend;
           sv.yaw = lerpAngle(sv.yaw, authProjected.yaw, localDriftBlend);
           sv.speed += (authProjected.speed - sv.speed) * localDriftBlend;
         }
       } else {
-        // Remote or unoccupied vehicle: project forward along velocity over pktAgeSec
+        // Remote or unoccupied vehicle/plane: project forward along velocity over pktAgeSec
         const targetX = nv.x + Math.sin(nv.yaw) * nv.speed * pktAgeSec;
         const targetZ = nv.z + Math.cos(nv.yaw) * nv.speed * pktAgeSec;
         const errSq = (targetX - sv.x) * (targetX - sv.x) + (targetZ - sv.z) * (targetZ - sv.z);
         if (errSq > 36) {
           sv.x = targetX;
+          sv.y = nv.y;
           sv.z = targetZ;
           sv.yaw = nv.yaw;
         } else {
           sv.x += (targetX - sv.x) * remoteBlend;
+          sv.y += (nv.y - sv.y) * remoteBlend;
           sv.z += (targetZ - sv.z) * remoteBlend;
           sv.yaw = lerpAngle(sv.yaw, nv.yaw, yawBlend);
         }
-        sv.y = 0;
         sv.speed += (nv.speed - sv.speed) * remoteBlend;
       }
 
@@ -496,6 +505,8 @@ export class NetworkClient {
       sp.mode = np.mode;
       sp.vehicleId = np.vehicleId;
       sp.seatIndex = np.seatIndex;
+      sp.cash = np.cash || 0;
+      sp.heldItem = np.heldItem || '';
     }
 
     this.smoothedState.timeMs = now;
@@ -553,6 +564,40 @@ export class NetworkClient {
     return new Promise((resolve) => {
       this.actionResolvers.set(requestId, resolve);
       this.room!.send('vehicle:exit', { requestId });
+
+      setTimeout(() => {
+        if (this.actionResolvers.has(requestId)) {
+          this.actionResolvers.delete(requestId);
+          resolve({ ok: false, code: 'RATE_LIMITED' });
+        }
+      }, 3000);
+    });
+  }
+
+  public async quickSpawnVehicle(kind: 'car' | 'plane'): Promise<{ ok: boolean; code?: ActionError }> {
+    if (!this.room) return { ok: false, code: 'NOT_FOUND' };
+
+    const requestId = `req_qspawn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    return new Promise((resolve) => {
+      this.actionResolvers.set(requestId, resolve);
+      this.room!.send('vehicle:quickspawn', { requestId, kind });
+
+      setTimeout(() => {
+        if (this.actionResolvers.has(requestId)) {
+          this.actionResolvers.delete(requestId);
+          resolve({ ok: false, code: 'RATE_LIMITED' });
+        }
+      }, 3000);
+    });
+  }
+
+  public async useItem(): Promise<{ ok: boolean; code?: ActionError }> {
+    if (!this.room) return { ok: false, code: 'NOT_FOUND' };
+
+    const requestId = `req_item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    return new Promise((resolve) => {
+      this.actionResolvers.set(requestId, resolve);
+      this.room!.send('item:use', { requestId });
 
       setTimeout(() => {
         if (this.actionResolvers.has(requestId)) {

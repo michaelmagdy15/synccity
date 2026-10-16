@@ -207,19 +207,25 @@ export class CityRoom extends Room<{ state: CityRoomState }> {
         return reply(false, 'NOT_FOUND');
       }
 
-      if (Math.abs(vehicle.speed) > LIMITS.exitMaxSpeed) {
+      if (Math.abs(vehicle.speed) > LIMITS.exitMaxSpeed && vehicle.y < 1.5) {
         return reply(false, 'MOVING');
       }
 
-      // Safe exit position check
-      const safeExit = findSafeExit(vehicle.x, vehicle.z, vehicle.yaw);
-      if (!safeExit) {
-        return reply(false, 'NO_SAFE_EXIT');
-      }
+      // Safe exit position check (with fallback to Plaza if bailing out of a plane over a rooftop)
+      const safeExit = findSafeExit(vehicle.x, vehicle.z, vehicle.yaw) || {
+        x: SPAWN_POINTS[0].x,
+        y: 0,
+        z: SPAWN_POINTS[0].z,
+        yaw: vehicle.yaw,
+      };
 
       // Vacate seat
       if (player.seatIndex === 0 || player.seatIndex === 1) {
         vehicle.seats[player.seatIndex] = '';
+      }
+      if (vehicle.y > 0.5 && vehicle.seats[0] === '') {
+        vehicle.y = 0;
+        vehicle.speed = 0;
       }
 
       player.mode = 'walking';
@@ -234,6 +240,31 @@ export class CityRoom extends Room<{ state: CityRoomState }> {
 
       this.simulation.clearPlayerInput(player.id);
       reply(true);
+    });
+
+    // 3b. Instant Quick-Spawn into Car or Plane
+    this.onMessage(
+      'vehicle:quickspawn',
+      (client: Client, message: { requestId: string; kind: 'car' | 'plane' }) => {
+        const { requestId, kind } = message || {};
+        const validKind = kind === 'plane' ? 'plane' : 'car';
+        const ok = this.simulation.quickSpawnVehicle(client.sessionId, validKind);
+        client.send('action:result', {
+          requestId: requestId || '',
+          ok,
+          code: ok ? undefined : 'SEAT_TAKEN',
+        });
+      }
+    );
+
+    // 3c. Use held SmashKarts-style Powerup Item (Nitro / EMP / Rocket)
+    this.onMessage('item:use', (client: Client, message: { requestId: string }) => {
+      const { requestId } = message || {};
+      const res = this.simulation.useItem(client.sessionId);
+      client.send('action:result', {
+        requestId: requestId || '',
+        ok: res.ok,
+      });
     });
 
     // 4. Chat messages
@@ -340,6 +371,8 @@ export class CityRoom extends Room<{ state: CityRoomState }> {
     player.seatIndex = -1;
     player.inputEpoch = 1;
     player.lastInputSeq = 0;
+    player.cash = 100;
+    player.heldItem = 'nitro';
 
     this.state.players.set(client.sessionId, player);
 

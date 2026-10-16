@@ -3,8 +3,11 @@ import {
   CHECKPOINTS,
   CITY_COLLIDERS,
   CITY_ROADS,
+  MYSTERY_BOX_SPOTS,
   RACE_CIRCUIT,
+  SKY_RINGS,
   SPEED_BOOST_PADS,
+  isPlaneVehicle,
 } from '@synccity/shared/world';
 import type { StateSnapshot } from '../network/NetworkClient.js';
 import { CameraFollow } from './CameraFollow.js';
@@ -38,6 +41,8 @@ export class World {
 
   private pickupBeacon!: THREE.Group;
   private destBeacon!: THREE.Group;
+  private gpsArrowGroup!: THREE.Group;
+  private gpsArrowMat!: THREE.MeshBasicMaterial;
 
   // Pre-allocated zero-GC tire smoke pool
   private smokePool: SmokeSlot[] = [];
@@ -778,6 +783,71 @@ export class World {
     );
     this.destBeacon.visible = false;
     this.scene.add(this.destBeacon);
+
+    // 1. Aerial Sky Rings for Planes (+$500 & Air Boost)
+    const skyRingMat = new THREE.MeshBasicMaterial({ color: 0xffd15c });
+    const skyInnerMat = new THREE.MeshBasicMaterial({
+      color: 0x73e6f5,
+      transparent: true,
+      opacity: 0.75,
+    });
+    this.animatedMaterials.push(skyInnerMat);
+
+    SKY_RINGS.forEach((ring) => {
+      const ringGroup = new THREE.Group();
+      ringGroup.position.set(ring.x, ring.y, ring.z);
+      ringGroup.rotation.y = ring.yaw;
+
+      const outerTorus = new THREE.Mesh(
+        new THREE.TorusGeometry(ring.radius, 0.45, 8, 28),
+        skyRingMat
+      );
+      const innerTorus = new THREE.Mesh(
+        new THREE.TorusGeometry(ring.radius - 0.8, 0.2, 6, 24),
+        skyInnerMat
+      );
+      ringGroup.add(outerTorus, innerTorus);
+      this.scene.add(ringGroup);
+    });
+
+    // 2. SmashKarts-Style Rotating Mystery Weapon Crates (? Boxes)
+    const boxOuterMat = new THREE.MeshBasicMaterial({
+      color: 0xffd15c,
+      wireframe: true,
+    });
+    const boxCoreMat = new THREE.MeshPhongMaterial({
+      color: 0xf26cda,
+      emissive: 0x7a1c68,
+      shininess: 110,
+      flatShading: true,
+    });
+
+    MYSTERY_BOX_SPOTS.forEach((spot) => {
+      const crateGroup = new THREE.Group();
+      crateGroup.position.set(spot.x, spot.y, spot.z);
+
+      const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.95, 0), boxCoreMat);
+      const cage = new THREE.Mesh(new THREE.BoxGeometry(1.45, 1.45, 1.45), boxOuterMat);
+      crateGroup.add(core, cage);
+      this.scene.add(crateGroup);
+      this.rotatingCrystals.push(crateGroup);
+    });
+
+    // 3. 3D Overhead GPS Objective Arrow (Crazy Taxi / Arcade Compass)
+    this.gpsArrowGroup = new THREE.Group();
+    this.gpsArrowMat = new THREE.MeshBasicMaterial({ color: 0x38ef7d });
+
+    const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.16, 1.15), this.gpsArrowMat);
+    shaft.position.set(0, 0, -0.35);
+
+    const headCone = new THREE.Mesh(new THREE.ConeGeometry(0.62, 1.0, 4), this.gpsArrowMat);
+    headCone.rotation.x = Math.PI / 2;
+    headCone.rotation.z = Math.PI / 4;
+    headCone.position.set(0, 0, 0.55);
+
+    this.gpsArrowGroup.add(shaft, headCone);
+    this.gpsArrowGroup.visible = false;
+    this.scene.add(this.gpsArrowGroup);
   }
 
   private createCheckpointMesh(x: number, z: number, radius: number, colorHex: number): THREE.Group {
@@ -816,14 +886,15 @@ export class World {
   public update(snapshot: StateSnapshot, localPlayerId: string, dt: number): void {
     const time = performance.now() * 0.001;
 
-    // 1. Animate Beacons & Rotating Arcade Crystals
+    // 1. Animate Beacons & Rotating Arcade Crystals / Mystery Boxes
     const pulse = 0.6 + Math.sin(time * 3.5) * 0.35;
     for (let i = 0; i < this.animatedMaterials.length; i++) {
       this.animatedMaterials[i].opacity = pulse;
     }
     for (let i = 0; i < this.rotatingCrystals.length; i++) {
       const c = this.rotatingCrystals[i];
-      c.rotation.y += dt * 2.2;
+      c.rotation.y += dt * 2.4;
+      c.rotation.x = Math.sin(time * 2.5 + i) * 0.25;
     }
 
     // 2. Traffic Lights on Start/Finish Gantry
@@ -848,13 +919,14 @@ export class World {
     this.pickupBeacon.visible = snapshot.delivery.phase === 'available';
     this.destBeacon.visible = snapshot.delivery.phase === 'active';
 
-    // 3. Update Supercar Vehicles
+    // 3. Update Supercar Vehicles & Flyable Stunt Planes
     const activeVehicles = new Set<string>();
     for (const [id, veh] of Object.entries(snapshot.vehicles)) {
       activeVehicles.add(id);
+      const isPlane = isPlaneVehicle(id);
       let mesh = this.vehicleMeshes.get(id);
       if (!mesh) {
-        mesh = this.createSupercarMesh(id);
+        mesh = isPlane ? this.createPlaneMesh(id) : this.createSupercarMesh(id);
         this.vehicleMeshes.set(id, mesh);
         this.scene.add(mesh);
       }
@@ -864,21 +936,36 @@ export class World {
 
       const prevSpeed = ((mesh as any)._prevSpeed as number) ?? veh.speed;
       const prevYaw = ((mesh as any)._prevYaw as number) ?? veh.yaw;
-
-      // Spin wheels & steer front wheels visually
-      const wheels = (mesh as any)._wheels as THREE.Object3D[];
-      const frontPivots = (mesh as any)._frontPivots as THREE.Object3D[];
-      if (wheels && Math.abs(veh.speed) > 0.05) {
-        const wheelRotSpeed = (veh.speed / 0.36) * dt;
-        for (let i = 0; i < wheels.length; i++) {
-          wheels[i].rotation.x += wheelRotSpeed;
-        }
-      }
+      const prevY = ((mesh as any)._prevY as number) ?? veh.y;
 
       let yawDelta = veh.yaw - prevYaw;
       while (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
       while (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
       const yawRate = yawDelta / Math.max(0.016, dt);
+      const climbRate = (veh.y - prevY) / Math.max(0.016, dt);
+
+      // Spin nose propeller & apply aerodynamic bank/pitch on Planes
+      const propeller = (mesh as any)._propeller as THREE.Object3D | undefined;
+      if (propeller) {
+        propeller.rotation.z += dt * (14 + Math.abs(veh.speed) * 1.8);
+      }
+      const bankBody = (mesh as any)._bankBody as THREE.Object3D | undefined;
+      if (bankBody) {
+        const targetRoll = Math.max(-0.55, Math.min(0.55, yawRate * 0.26));
+        const targetPitch = veh.y > 0.3 ? Math.max(-0.32, Math.min(0.35, -climbRate * 0.035)) : 0;
+        bankBody.rotation.z += (targetRoll - bankBody.rotation.z) * Math.min(1, dt * 10);
+        bankBody.rotation.x += (targetPitch - bankBody.rotation.x) * Math.min(1, dt * 10);
+      }
+
+      // Spin wheels & steer front wheels visually
+      const wheels = (mesh as any)._wheels as THREE.Object3D[];
+      const frontPivots = (mesh as any)._frontPivots as THREE.Object3D[];
+      if (wheels && Math.abs(veh.speed) > 0.05 && veh.y < 1.0) {
+        const wheelRotSpeed = (veh.speed / 0.36) * dt;
+        for (let i = 0; i < wheels.length; i++) {
+          wheels[i].rotation.x += wheelRotSpeed;
+        }
+      }
 
       if (frontPivots) {
         const targetSteerAngle = Math.max(-0.45, Math.min(0.45, yawRate * 0.18));
@@ -890,7 +977,7 @@ export class World {
       // Active Brake Taillights, Exhaust Flame, & Drift Smoke
       const isBraking = Math.abs(veh.speed) < Math.abs(prevSpeed) - 0.06 || veh.speed < -0.5;
       const isAccelerating = veh.speed > prevSpeed + 0.04 && veh.speed > 4;
-      const isDrifting = Math.abs(veh.speed) > 7.5 && Math.abs(yawRate) > 0.65;
+      const isDrifting = !isPlane && Math.abs(veh.speed) > 7.5 && Math.abs(yawRate) > 0.65;
 
       const tlMat = (mesh as any)._tlMat as THREE.MeshBasicMaterial | undefined;
       if (tlMat) {
@@ -899,17 +986,18 @@ export class World {
 
       const exhaustFlames = (mesh as any)._exhaustFlames as THREE.Object3D | undefined;
       if (exhaustFlames) {
-        exhaustFlames.visible = isAccelerating || veh.speed > 13;
-        const s = 0.8 + Math.sin(time * 40) * 0.35;
+        exhaustFlames.visible = isAccelerating || veh.speed > 12 || (isPlane && veh.y > 0.5);
+        const s = 0.85 + Math.sin(time * 40) * 0.35;
         exhaustFlames.scale.set(1, 1, s);
       }
 
-      if ((isDrifting || (isBraking && Math.abs(veh.speed) > 8)) && Math.random() < 0.55) {
+      if ((isDrifting || (!isPlane && isBraking && Math.abs(veh.speed) > 8)) && Math.random() < 0.55) {
         this.spawnSmokePuff(veh.x, veh.z, veh.yaw);
       }
 
       (mesh as any)._prevSpeed = veh.speed;
       (mesh as any)._prevYaw = veh.yaw;
+      (mesh as any)._prevY = veh.y;
     }
 
     this.updateSmokePool(dt);
@@ -970,7 +1058,7 @@ export class World {
         const veh = isSeated ? snapshot.vehicles[player.vehicleId] : undefined;
         localTransform = {
           x: veh ? veh.x : player.x,
-          y: 0,
+          y: veh ? veh.y : 0,
           z: veh ? veh.z : player.z,
           yaw: veh ? veh.yaw : player.yaw,
           isVehicle: isSeated,
@@ -986,8 +1074,11 @@ export class World {
       }
     }
 
-    // 5. Camera Follow (Rigid height & constant FOV for zero vertical bobbing)
+    // 5. Update 3D Overhead GPS Objective Arrow & Camera Follow
     if (activePlayers.has(localPlayerId)) {
+      const localPlayer = snapshot.players[localPlayerId];
+      this.updateGpsArrow(snapshot, localPlayer, localTransform, time);
+
       this.cameraFollow.update(
         localTransform.x,
         localTransform.y,
@@ -999,6 +1090,83 @@ export class World {
     }
 
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Updates the 3D Overhead GPS Compass Arrow so the player always has a clear visual objective.
+   */
+  private updateGpsArrow(
+    snapshot: StateSnapshot,
+    localPlayer: StateSnapshot['players'][string] | undefined,
+    localTransform: { x: number; y: number; z: number; isVehicle: boolean },
+    time: number
+  ): void {
+    if (!localPlayer) {
+      this.gpsArrowGroup.visible = false;
+      return;
+    }
+
+    let targetX: number = CHECKPOINTS.pickup.x;
+    let targetZ: number = CHECKPOINTS.pickup.z;
+    let arrowColor: number = 0x73e6f5;
+
+    const isFlyingPlane =
+      localPlayer.vehicleId && isPlaneVehicle(localPlayer.vehicleId) && localTransform.y > 4.0;
+
+    if (snapshot.race && (snapshot.race.status === 'racing' || snapshot.race.status === 'countdown')) {
+      // Point toward race circuit direction
+      const gate = RACE_CIRCUIT[1];
+      targetX = gate.x;
+      targetZ = gate.z;
+      arrowColor = 0x38ef7d;
+    } else if (snapshot.delivery.phase === 'active') {
+      targetX = CHECKPOINTS.destination.x;
+      targetZ = CHECKPOINTS.destination.z;
+      arrowColor = 0xf26cda;
+    } else if (isFlyingPlane) {
+      // Point pilot to nearest Sky Ring
+      let bestDistSq = Infinity;
+      for (const ring of SKY_RINGS) {
+        const dSq = (ring.x - localTransform.x) ** 2 + (ring.z - localTransform.z) ** 2;
+        if (dSq > 100 && dSq < bestDistSq) {
+          bestDistSq = dSq;
+          targetX = ring.x;
+          targetZ = ring.z;
+        }
+      }
+      arrowColor = 0xffd15c;
+    } else if (localPlayer.mode === 'walking') {
+      // Point walking player to nearest unoccupied vehicle or plane
+      let bestDistSq = Infinity;
+      for (const veh of Object.values(snapshot.vehicles)) {
+        if (veh.seats[0] === '' || veh.seats[1] === '') {
+          const dSq = (veh.x - localTransform.x) ** 2 + (veh.z - localTransform.z) ** 2;
+          if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            targetX = veh.x;
+            targetZ = veh.z;
+          }
+        }
+      }
+      arrowColor = 0x38ef7d;
+    } else {
+      // Seated in car/plane -> Point to Waterfront Heist Pickup Bay
+      targetX = CHECKPOINTS.pickup.x;
+      targetZ = CHECKPOINTS.pickup.z;
+      arrowColor = 0x73e6f5;
+    }
+
+    this.gpsArrowGroup.visible = true;
+    this.gpsArrowGroup.position.set(
+      localTransform.x,
+      localTransform.y + 3.1 + Math.sin(time * 5.0) * 0.14,
+      localTransform.z
+    );
+    this.gpsArrowGroup.rotation.y = Math.atan2(
+      targetX - localTransform.x,
+      targetZ - localTransform.z
+    );
+    this.gpsArrowMat.color.setHex(arrowColor);
   }
 
   private spawnSmokePuff(vx: number, vz: number, yaw: number): void {
@@ -1032,6 +1200,152 @@ export class World {
         s.mat.opacity = s.life;
       }
     }
+  }
+
+  /**
+   * 3D Synthwave Twin-Seat Stunt Plane / Jet Prop Builder:
+   * Features swept wings with neon leading edges, spinning nose propeller,
+   * twin vertical tail stabilizers, dual cockpit seats, afterburners, and banking/pitch pivot.
+   */
+  private createPlaneMesh(vehicleId: string): THREE.Group {
+    const planeRoot = new THREE.Group();
+    const bankBody = new THREE.Group();
+    planeRoot.add(bankBody);
+    (planeRoot as any)._bankBody = bankBody;
+
+    const isSecondPlane = vehicleId.endsWith('2');
+    const hullColor = isSecondPlane ? 0x1e143d : 0x112a46;
+    const neonHex = isSecondPlane ? 0xf26cda : 0x73e6f5;
+    const secondaryHex = isSecondPlane ? 0xffd15c : 0x38ef7d;
+
+    const hullMat = new THREE.MeshPhongMaterial({
+      color: hullColor,
+      specular: 0xffffff,
+      shininess: 105,
+      flatShading: true,
+    });
+    const neonMat = new THREE.MeshBasicMaterial({ color: neonHex });
+    const secMat = new THREE.MeshBasicMaterial({ color: secondaryHex });
+    const darkMat = new THREE.MeshLambertMaterial({ color: 0x0b0816 });
+    const glassMat = new THREE.MeshPhongMaterial({
+      color: 0x091a30,
+      emissive: 0x062038,
+      specular: 0x73e6f5,
+      shininess: 140,
+      transparent: true,
+      opacity: 0.72,
+    });
+
+    // 1. Aerodynamic Fuselage + Pointed Nose Cone (+Z)
+    const fuselage = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.56, 4.3), hullMat);
+    fuselage.position.set(0, 0.56, -0.1);
+    bankBody.add(fuselage);
+
+    const noseCone = new THREE.Mesh(new THREE.ConeGeometry(0.55, 1.35, 6), hullMat);
+    noseCone.rotation.x = Math.PI / 2;
+    noseCone.position.set(0, 0.56, 2.65);
+    bankBody.add(noseCone);
+
+    const noseStripe = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.05, 4.2), neonMat);
+    noseStripe.position.set(0, 0.85, -0.05);
+    bankBody.add(noseStripe);
+
+    // 2. Spinning 3-Blade Nose Propeller (+Z)
+    const propGroup = new THREE.Group();
+    propGroup.position.set(0, 0.56, 3.35);
+    const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.36, 8), secMat);
+    spinner.rotation.x = Math.PI / 2;
+    propGroup.add(spinner);
+
+    const bladeGeom = new THREE.BoxGeometry(1.65, 0.14, 0.04);
+    for (let b = 0; b < 3; b++) {
+      const blade = new THREE.Mesh(bladeGeom, b === 0 ? neonMat : darkMat);
+      blade.rotation.z = (b * Math.PI) / 3;
+      propGroup.add(blade);
+    }
+    bankBody.add(propGroup);
+    (planeRoot as any)._propeller = propGroup;
+
+    // 3. Wide Swept Stunt Wings (5.8m Wingspan) + Neon Leading Edges & Wingtip Pods
+    const mainWing = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.1, 1.35), hullMat);
+    mainWing.position.set(0, 0.54, 0.15);
+    const wingLeadEdge = new THREE.Mesh(new THREE.BoxGeometry(5.84, 0.06, 0.16), neonMat);
+    wingLeadEdge.position.set(0, 0.55, 0.84);
+    bankBody.add(mainWing, wingLeadEdge);
+
+    const podGeom = new THREE.CylinderGeometry(0.14, 0.14, 1.65, 8);
+    podGeom.rotateX(Math.PI / 2);
+    const podL = new THREE.Mesh(podGeom, secMat);
+    podL.position.set(-2.92, 0.55, 0.15);
+    const podR = new THREE.Mesh(podGeom, secMat);
+    podR.position.set(2.92, 0.55, 0.15);
+    bankBody.add(podL, podR);
+
+    // 4. Twin Vertical Tail Stabilizers & Horizontal Elevator (-Z)
+    const tailWing = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.08, 0.75), hullMat);
+    tailWing.position.set(0, 0.65, -2.05);
+    bankBody.add(tailWing);
+
+    const finGeom = new THREE.BoxGeometry(0.1, 0.95, 0.85);
+    const finL = new THREE.Mesh(finGeom, hullMat);
+    finL.position.set(-0.75, 1.05, -2.0);
+    finL.rotation.x = -0.22;
+    const finR = new THREE.Mesh(finGeom, hullMat);
+    finR.position.set(0.75, 1.05, -2.0);
+    finR.rotation.x = -0.22;
+
+    const finTipGeom = new THREE.BoxGeometry(0.12, 0.12, 0.86);
+    const finTipL = new THREE.Mesh(finTipGeom, neonMat);
+    finTipL.position.set(-0.75, 1.52, -2.0);
+    const finTipR = new THREE.Mesh(finTipGeom, neonMat);
+    finTipR.position.set(0.75, 1.52, -2.0);
+    bankBody.add(finL, finR, finTipL, finTipR);
+
+    // 5. Cockpit Seats & Tinted Windscreen Canopy
+    const seatGeom = new THREE.BoxGeometry(0.46, 0.42, 0.46);
+    const pilotSeat = new THREE.Mesh(seatGeom, new THREE.MeshLambertMaterial({ color: 0x163b5c }));
+    pilotSeat.position.set(0.52, 0.66, -0.1);
+    const copilotSeat = new THREE.Mesh(seatGeom, new THREE.MeshLambertMaterial({ color: 0x4a154b }));
+    copilotSeat.position.set(-0.52, 0.66, -0.1);
+    bankBody.add(pilotSeat, copilotSeat);
+
+    const windscreen = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.42, 0.75), glassMat);
+    windscreen.position.set(0, 0.94, 0.62);
+    windscreen.rotation.x = -0.55;
+    bankBody.add(windscreen);
+
+    // 6. Twin Jet Afterburner Cones (-Z)
+    const exhaustGroup = new THREE.Group();
+    const flameMat = new THREE.MeshBasicMaterial({ color: secondaryHex });
+    const coneGeom = new THREE.ConeGeometry(0.18, 0.95, 6);
+    coneGeom.rotateX(-Math.PI / 2);
+    const flameL = new THREE.Mesh(coneGeom, flameMat);
+    flameL.position.set(-0.42, 0.52, -2.65);
+    const flameR = new THREE.Mesh(coneGeom, flameMat);
+    flameR.position.set(0.42, 0.52, -2.65);
+    exhaustGroup.add(flameL, flameR);
+    bankBody.add(exhaustGroup);
+    (planeRoot as any)._exhaustFlames = exhaustGroup;
+
+    // 7. Landing Gear Wheels
+    const wheels: THREE.Object3D[] = [];
+    const gearCoords = [
+      { x: 0, y: 0.24, z: 1.65 },
+      { x: -1.1, y: 0.24, z: -0.45 },
+      { x: 1.1, y: 0.24, z: -0.45 },
+    ];
+    gearCoords.forEach(({ x, y, z }) => {
+      const spinGroup = new THREE.Group();
+      spinGroup.position.set(x, y, z);
+      const tire = new THREE.Mesh(this.sharedWheelGeom, this.sharedTireMat);
+      tire.scale.setScalar(0.68);
+      spinGroup.add(tire);
+      bankBody.add(spinGroup);
+      wheels.push(spinGroup);
+    });
+    (planeRoot as any)._wheels = wheels;
+
+    return planeRoot;
   }
 
   /**

@@ -30,12 +30,15 @@ export interface ClientMessages {
   input: InputMessage;
   'vehicle:enter': { requestId: string; vehicleId: string; seatIndex: 0 | 1 };
   'vehicle:exit': { requestId: string };
+  'vehicle:quickspawn': { requestId: string; kind: 'car' | 'plane' };
+  'item:use': { requestId: string };
   'chat:send': { requestId: string; text: string };
   'race:start': { requestId: string };
   ping: { nonce: number };
 }
 
 export type PlayerMode = 'walking' | 'driver' | 'passenger';
+export type PowerupItem = '' | 'nitro' | 'emp' | 'rocket';
 export interface Transform { x: number; y: number; z: number; yaw: number }
 export interface PlayerState extends Transform {
   id: string;
@@ -47,6 +50,8 @@ export interface PlayerState extends Transform {
   seatIndex: -1 | 0 | 1;
   inputEpoch: number;
   lastInputSeq: number;
+  cash?: number;
+  heldItem?: string;
 }
 export interface VehicleState extends Transform {
   id: string;

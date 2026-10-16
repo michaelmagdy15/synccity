@@ -726,6 +726,26 @@ html, body {
   color: #ff8fa3;
 }
 
+.btn-item {
+  background: linear-gradient(135deg, #ffd15c, #ff4d6d);
+  color: #0d0821;
+  font-family: var(--font-display);
+  font-weight: 900;
+  box-shadow: 0 0 12px rgba(255, 209, 92, 0.55);
+}
+
+.cash-pill {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--success);
+  background: rgba(56, 239, 125, 0.14);
+  border: 1px solid rgba(56, 239, 125, 0.5);
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
 .btn-xs { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
 .btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
 

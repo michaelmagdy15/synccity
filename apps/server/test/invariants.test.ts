@@ -300,5 +300,71 @@ describe('SyncCity Server Invariants & Simulation Tests', () => {
     assert.equal(pAfterLap1.currentLap, 2, 'Crossing finish line must advance participant to Lap 2');
     assert.ok(pAfterLap1.bestLapMs > 0, 'Lap time must be recorded');
   });
+
+  test('P17: 3D Plane flight physics - takeoff altitude climb and rooftop overflight', () => {
+    let planeState = { x: 0, y: 0, z: -20, yaw: 0, speed: 0 };
+
+    // Accelerate and climb for 30 steps (1.5s)
+    for (let i = 0; i < 30; i++) {
+      planeState = stepVehicleKinematics(
+        planeState,
+        1.0, // Full throttle
+        0,
+        false,
+        0.05,
+        CITY_COLLIDERS,
+        CITY_BOUNDS,
+        true // isPlane
+      );
+    }
+
+    assert.ok(planeState.speed > 18, 'Plane airspeed must exceed car top speed');
+    assert.ok(planeState.y > 2.5, 'Plane must lift off into 3D altitude (y > 2.5m)');
+
+    // Verify plane at y = 10m flies cleanly over plaza_center (height = 3m)
+    const overPlaza = stepVehicleKinematics(
+      { x: 0, y: 10, z: -5.5, yaw: 0, speed: 25 },
+      1.0,
+      0,
+      false,
+      0.1,
+      CITY_COLLIDERS,
+      CITY_BOUNDS,
+      true
+    );
+    assert.ok(overPlaza.z > -4.0, 'Plane above building height must fly cleanly over rooftop');
+  });
+
+  test('P18: Arcade Loop - Quick-spawn into Plane/Car and Powerup item activation', () => {
+    const state = new CityRoomState();
+    const sim = new CitySimulation(state);
+
+    const plane = new VehicleSchema();
+    plane.id = 'veh_plane_1';
+    plane.x = 22;
+    plane.y = 0;
+    plane.z = 0;
+    plane.seats.push('', '');
+    state.vehicles.set('veh_plane_1', plane);
+
+    const p1 = new PlayerSchema();
+    p1.id = 'pilot_1';
+    p1.mode = 'walking';
+    p1.connected = true;
+    p1.cash = 100;
+    p1.heldItem = 'nitro';
+    state.players.set('pilot_1', p1);
+
+    const spawned = sim.quickSpawnVehicle('pilot_1', 'plane');
+    assert.equal(spawned, true, 'Quick-spawn into plane must succeed');
+    assert.equal(p1.vehicleId, 'veh_plane_1', 'Player must be seated in veh_plane_1');
+    assert.equal(p1.mode, 'driver', 'Player must become pilot/driver');
+
+    const itemRes = sim.useItem('pilot_1');
+    assert.equal(itemRes.ok, true, 'Using held nitro item must succeed');
+    assert.equal(p1.heldItem, '', 'Held item must be consumed');
+    assert.ok(plane.speed >= 30, 'Nitro must surge plane airspeed');
+    assert.ok(p1.cash > 100, 'Using powerup must award stunt cash');
+  });
 });
 
