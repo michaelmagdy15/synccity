@@ -8,17 +8,34 @@ export interface InputAxes {
 
 export type InteractCallback = () => void;
 
+export interface TouchControlBindings {
+  joystickZone: HTMLElement | null;
+  joystickKnob: HTMLElement | null;
+  enterBtn: HTMLElement | null;
+  steerLeftBtn: HTMLElement | null;
+  steerRightBtn: HTMLElement | null;
+  gasBtn: HTMLElement | null;
+  brakeBtn: HTMLElement | null;
+  driftBtn: HTMLElement | null;
+}
+
 export class InputManager {
   private keysHeld = new Set<string>();
   private interactCallbacks: InteractCallback[] = [];
 
-  // Touch joystick state
+  // Touch joystick state (used for walking & optional steering)
   private joystickTouchId: number | null = null;
   private joystickStartX = 0;
   private joystickStartY = 0;
   private joystickDeltaX = 0;
   private joystickDeltaY = 0;
-  private touchBrake = false;
+
+  // Dedicated mobile driving pedals & buttons
+  private touchSteerLeft = false;
+  private touchSteerRight = false;
+  private touchGas = false;
+  private touchReverseBrake = false;
+  private touchDrift = false;
 
   private joystickKnobEl: HTMLElement | null = null;
   private joystickBaseEl: HTMLElement | null = null;
@@ -31,51 +48,67 @@ export class InputManager {
     this.setupWindowEvents();
   }
 
-  public bindTouchElements(
-    joystickZone: HTMLElement | null,
-    joystickKnob: HTMLElement | null,
-    enterBtn: HTMLElement | null,
-    brakeBtn: HTMLElement | null
-  ): void {
-    this.joystickBaseEl = joystickZone;
-    this.joystickKnobEl = joystickKnob;
+  private vibrate(ms = 12): void {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(ms);
+      }
+    } catch {}
+  }
 
-    if (joystickZone) {
-      joystickZone.addEventListener('touchstart', this.handleTouchStart, { passive: false });
+  private bindHoldButton(
+    el: HTMLElement | null,
+    onChange: (active: boolean) => void
+  ): void {
+    if (!el) return;
+    const activate = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      el.classList.add('active');
+      onChange(true);
+      this.vibrate(10);
+    };
+    const deactivate = (e: Event) => {
+      e.preventDefault();
+      el.classList.remove('active');
+      onChange(false);
+    };
+
+    el.addEventListener('touchstart', activate, { passive: false });
+    el.addEventListener('touchend', deactivate, { passive: false });
+    el.addEventListener('touchcancel', deactivate, { passive: false });
+    el.addEventListener('mousedown', activate);
+    el.addEventListener('mouseup', deactivate);
+    el.addEventListener('mouseleave', deactivate);
+  }
+
+  public bindTouchElements(bindings: TouchControlBindings): void {
+    this.joystickBaseEl = bindings.joystickZone;
+    this.joystickKnobEl = bindings.joystickKnob;
+
+    if (bindings.joystickZone) {
+      bindings.joystickZone.addEventListener('touchstart', this.handleTouchStart, { passive: false });
       window.addEventListener('touchmove', this.handleTouchMove, { passive: false });
       window.addEventListener('touchend', this.handleTouchEnd);
       window.addEventListener('touchcancel', this.handleTouchEnd);
     }
 
-    if (enterBtn) {
-      enterBtn.addEventListener('click', (e) => {
+    if (bindings.enterBtn) {
+      const trigger = (e: Event) => {
         e.preventDefault();
+        e.stopPropagation();
+        this.vibrate(18);
         this.triggerInteract();
-      });
-      enterBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        this.triggerInteract();
-      }, { passive: false });
+      };
+      bindings.enterBtn.addEventListener('touchstart', trigger, { passive: false });
+      bindings.enterBtn.addEventListener('click', trigger);
     }
 
-    if (brakeBtn) {
-      brakeBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        this.touchBrake = true;
-      }, { passive: false });
-      brakeBtn.addEventListener('touchend', () => {
-        this.touchBrake = false;
-      });
-      brakeBtn.addEventListener('touchcancel', () => {
-        this.touchBrake = false;
-      });
-      brakeBtn.addEventListener('mousedown', () => {
-        this.touchBrake = true;
-      });
-      window.addEventListener('mouseup', () => {
-        this.touchBrake = false;
-      });
-    }
+    this.bindHoldButton(bindings.steerLeftBtn, (v) => (this.touchSteerLeft = v));
+    this.bindHoldButton(bindings.steerRightBtn, (v) => (this.touchSteerRight = v));
+    this.bindHoldButton(bindings.gasBtn, (v) => (this.touchGas = v));
+    this.bindHoldButton(bindings.brakeBtn, (v) => (this.touchReverseBrake = v));
+    this.bindHoldButton(bindings.driftBtn, (v) => (this.touchDrift = v));
   }
 
   private setupKeyboard(): void {
@@ -83,11 +116,25 @@ export class InputManager {
       if (this.isChatFocused) return;
 
       const code = e.code;
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(code)) {
+      if (
+        [
+          'KeyW',
+          'KeyA',
+          'KeyS',
+          'KeyD',
+          'ArrowUp',
+          'ArrowDown',
+          'ArrowLeft',
+          'ArrowRight',
+          'Space',
+          'ShiftLeft',
+          'ShiftRight',
+        ].includes(code)
+      ) {
         this.keysHeld.add(code);
       }
 
-      if (code === 'KeyE') {
+      if (code === 'KeyE' || code === 'KeyF') {
         this.triggerInteract();
       }
     });
@@ -146,7 +193,7 @@ export class InputManager {
   };
 
   private updateJoystick(clientX: number, clientY: number): void {
-    const maxRadius = 45;
+    const maxRadius = 40;
     let dx = clientX - this.joystickStartX;
     let dy = clientY - this.joystickStartY;
 
@@ -160,9 +207,8 @@ export class InputManager {
       this.joystickKnobEl.style.transform = `translate(${dx}px, ${dy}px)`;
     }
 
-    // Normalize to [-1, 1]
     this.joystickDeltaX = dx / maxRadius;
-    this.joystickDeltaY = -dy / maxRadius; // Up is positive
+    this.joystickDeltaY = -dy / maxRadius;
   }
 
   public setChatFocus(focused: boolean): void {
@@ -189,7 +235,7 @@ export class InputManager {
     let rawZ = 0;
     let throttle = 0;
     let steer = 0;
-    let brake = this.keysHeld.has('Space') || this.touchBrake;
+    const brake = this.keysHeld.has('Space') || this.touchDrift;
 
     // Keyboard inputs
     if (this.keysHeld.has('KeyW') || this.keysHeld.has('ArrowUp')) {
@@ -209,25 +255,28 @@ export class InputManager {
       steer += 1;
     }
 
-    // Merge Touch joystick inputs if active
+    // Dedicated Touch Driving Pedals & Steer Buttons
+    if (this.touchGas) throttle += 1;
+    if (this.touchReverseBrake) throttle -= 1;
+    if (this.touchSteerLeft) steer -= 1;
+    if (this.touchSteerRight) steer += 1;
+
+    // Touch Joystick (Walking + fallback steering)
     if (this.joystickTouchId !== null) {
       rawX += this.joystickDeltaX;
       rawZ += this.joystickDeltaY;
       steer += this.joystickDeltaX;
-      throttle += this.joystickDeltaY;
+      if (!this.touchGas && !this.touchReverseBrake) {
+        throttle += this.joystickDeltaY;
+      }
     }
 
-    // Clamp driving inputs to [-1, 1]
     throttle = Math.max(-1, Math.min(1, throttle));
     steer = Math.max(-1, Math.min(1, steer));
 
-    // Convert camera-relative walking input to world-space X/Z
-    // cameraYaw 0 = looking +Z, PI/2 = looking +X
     const sinY = Math.sin(this.cameraYaw);
     const cosY = Math.cos(this.cameraYaw);
 
-    // When facing +Z (cameraYaw = 0), screen right is -X, screen left is +X
-    // Camera forward F = (sinY, cosY), Camera right R = (-cosY, sinY)
     const worldAxisX = -rawX * cosY + rawZ * sinY;
     const worldAxisZ = rawX * sinY + rawZ * cosY;
 
@@ -242,7 +291,11 @@ export class InputManager {
 
   public reset(): void {
     this.keysHeld.clear();
-    this.touchBrake = false;
+    this.touchSteerLeft = false;
+    this.touchSteerRight = false;
+    this.touchGas = false;
+    this.touchReverseBrake = false;
+    this.touchDrift = false;
     this.joystickTouchId = null;
     this.joystickDeltaX = 0;
     this.joystickDeltaY = 0;

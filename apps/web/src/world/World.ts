@@ -566,7 +566,29 @@ export class World {
           w.rotation.x += wheelRotSpeed;
         });
       }
+
+      // Dynamic Brake Lights & Drift Tire Smoke
+      const prevSpeed = ((mesh as any)._prevSpeed as number) ?? veh.speed;
+      const prevYaw = ((mesh as any)._prevYaw as number) ?? veh.yaw;
+      const isBraking = Math.abs(veh.speed) < Math.abs(prevSpeed) - 0.08 || veh.speed < -0.5;
+      let yawDelta = Math.abs(veh.yaw - prevYaw);
+      if (yawDelta > Math.PI) yawDelta = Math.abs(yawDelta - Math.PI * 2);
+      const isDrifting = Math.abs(veh.speed) > 7 && (yawDelta / Math.max(0.016, dt)) > 0.7;
+
+      const tlMat = (mesh as any)._tlMat as THREE.MeshBasicMaterial | undefined;
+      if (tlMat) {
+        tlMat.color.setHex(isBraking ? 0xff1744 : 0xf26cda);
+      }
+
+      if ((isDrifting || (isBraking && Math.abs(veh.speed) > 8)) && Math.random() < 0.65) {
+        this.spawnSmokePuff(veh.x, veh.z, veh.yaw);
+      }
+
+      (mesh as any)._prevSpeed = veh.speed;
+      (mesh as any)._prevYaw = veh.yaw;
     }
+
+    this.updateSmokePuffs(dt);
 
     // Cleanup dead vehicles
     for (const [id, mesh] of this.vehicleMeshes.entries()) {
@@ -578,7 +600,7 @@ export class World {
 
     // 3. Update Avatars
     const activePlayers = new Set<string>();
-    let localTransform = { x: 0, y: 0, z: 0, yaw: 0, isVehicle: false };
+    let localTransform = { x: 0, y: 0, z: 0, yaw: 0, isVehicle: false, speed: 0 };
 
     for (const [id, player] of Object.entries(snapshot.players)) {
       activePlayers.add(id);
@@ -605,12 +627,14 @@ export class World {
 
       if (id === localPlayerId) {
         const isSeated = player.mode !== 'walking';
+        const veh = isSeated ? snapshot.vehicles[player.vehicleId] : undefined;
         localTransform = {
           x: player.x,
           y: player.y,
           z: player.z,
-          yaw: player.yaw,
+          yaw: veh ? veh.yaw : player.yaw,
           isVehicle: isSeated,
+          speed: veh ? Math.abs(veh.speed) : 0,
         };
       }
     }
@@ -623,7 +647,7 @@ export class World {
       }
     }
 
-    // 4. Update Camera Follow
+    // 4. Update Camera Follow & Speed FOV Warp
     if (activePlayers.has(localPlayerId)) {
       this.cameraFollow.update(
         localTransform.x,
@@ -633,10 +657,58 @@ export class World {
         localTransform.isVehicle,
         dt
       );
+
+      const targetFov = localTransform.isVehicle
+        ? 60 + Math.min(14, (localTransform.speed / 18) * 14)
+        : 60;
+      if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+        this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 6);
+        this.camera.updateProjectionMatrix();
+      }
     }
 
     // Render Scene
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private smokePuffs: { mesh: THREE.Mesh; life: number }[] = [];
+
+  private spawnSmokePuff(vx: number, vz: number, yaw: number): void {
+    if (this.smokePuffs.length > 35) return;
+    const geom = new THREE.SphereGeometry(0.28, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xd8c8ff,
+      transparent: true,
+      opacity: 0.45,
+    });
+    const puff = new THREE.Mesh(geom, mat);
+    const side = (Math.random() > 0.5 ? 1 : -1) * 0.85;
+    const sinY = Math.sin(yaw);
+    const cosY = Math.cos(yaw);
+    puff.position.set(
+      vx - sinY * 1.6 + cosY * side,
+      0.22,
+      vz - cosY * 1.6 - sinY * side
+    );
+    this.scene.add(puff);
+    this.smokePuffs.push({ mesh: puff, life: 0.45 });
+  }
+
+  private updateSmokePuffs(dt: number): void {
+    for (let i = this.smokePuffs.length - 1; i >= 0; i--) {
+      const p = this.smokePuffs[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        this.scene.remove(p.mesh);
+        p.mesh.geometry.dispose();
+        (p.mesh.material as THREE.Material).dispose();
+        this.smokePuffs.splice(i, 1);
+      } else {
+        p.mesh.position.y += dt * 0.9;
+        p.mesh.scale.addScalar(dt * 2.4);
+        (p.mesh.material as THREE.MeshBasicMaterial).opacity = p.life;
+      }
+    }
   }
 
   private createVehicleMesh(): THREE.Group {
@@ -693,7 +765,7 @@ export class World {
     hlR.position.set(0.65, 0.45, 1.91);
     car.add(hlL, hlR);
 
-    // Taillights (Magenta emissive)
+    // Taillights (Magenta / Active Red Brake emissive)
     const tlGeom = new THREE.BoxGeometry(0.4, 0.12, 0.1);
     const tlMat = new THREE.MeshBasicMaterial({ color: 0xf26cda });
     const tlL = new THREE.Mesh(tlGeom, tlMat);
@@ -701,6 +773,7 @@ export class World {
     const tlR = new THREE.Mesh(tlGeom, tlMat);
     tlR.position.set(0.65, 0.5, -1.91);
     car.add(tlL, tlR);
+    (car as any)._tlMat = tlMat;
 
     // 4 Wheels
     const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.25, 16);

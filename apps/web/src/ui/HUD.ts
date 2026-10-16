@@ -1,10 +1,10 @@
 import type {
-  ActionError,
   ChatMessage,
   DeliveryState,
   PlayerState,
   RaceState,
 } from '@synccity/shared/protocol';
+import type { TouchControlBindings } from '../input/InputManager.js';
 
 export interface HUDActions {
   onJoin: (displayName: string, roomId?: string, isCreate?: boolean) => Promise<void>;
@@ -12,37 +12,62 @@ export interface HUDActions {
   onEnterVehicle: (vehicleId: string, seatIndex: 0 | 1) => Promise<void>;
   onExitVehicle: () => Promise<void>;
   onStartRace?: () => Promise<void>;
+  onToggleAudio?: () => boolean;
   onChatFocusChange: (focused: boolean) => void;
 }
+
+const CYBER_NAMES = [
+  'NeonDrifter',
+  'ApexViper',
+  'TurboPulse',
+  'SynthRunner',
+  'NightRider88',
+  'VectorZero',
+  'HyperNova',
+  'ChromeGhost',
+];
 
 export class HUD {
   private root: HTMLElement;
   private actions: HUDActions;
 
-  // DOM elements
   private modalEl!: HTMLElement;
   private hudTopBarEl!: HTMLElement;
-  private deliveryCardEl!: HTMLElement;
+  private radarWrapEl!: HTMLElement;
+  public radarCanvasEl!: HTMLCanvasElement;
+
   private interactToastEl!: HTMLElement;
+  private toastTextEl!: HTMLElement;
+
   private chatDrawerEl!: HTMLElement;
+  private chatToggleBtnEl!: HTMLElement;
+  private chatUnreadBadgeEl!: HTMLElement;
+  private chatToastHostEl!: HTMLElement;
+  private chatMessagesEl!: HTMLElement;
+  private chatInputEl!: HTMLInputElement;
+  private isChatOpen = false;
+  private unreadCount = 0;
+
   private touchZoneEl!: HTMLElement;
+  private walkingControlsEl!: HTMLElement;
+  private drivingLeftControlsEl!: HTMLElement;
+  private drivingRightControlsEl!: HTMLElement;
 
   private pingDotEl!: HTMLElement;
   private pingTextEl!: HTMLElement;
+  private fpsTextEl!: HTMLElement;
   private roomIdEl!: HTMLElement;
   private copyBtnEl!: HTMLElement;
+  private audioBtnEl!: HTMLElement;
+  private fullscreenBtnEl!: HTMLElement;
+
   private rolePillEl!: HTMLElement;
   private speedDisplayEl!: HTMLElement;
+  private topExitBtnEl!: HTMLElement;
 
-  private deliveryBadgeEl!: HTMLElement;
   private deliveryTextEl!: HTMLElement;
-  private toastTextEl!: HTMLElement;
-
-  private chatMessagesEl!: HTMLElement;
-  private chatInputEl!: HTMLInputElement;
 
   // Racing & Scoreboard elements
-  private raceHudCardEl!: HTMLElement;
   private raceLapBadgeEl!: HTMLElement;
   private raceTimerEl!: HTMLElement;
   private btnStartRaceEl!: HTMLElement;
@@ -51,11 +76,9 @@ export class HUD {
   private raceScoreboardEl!: HTMLElement;
   private scoreboardStatusEl!: HTMLElement;
   private scoreboardEntriesEl!: HTMLElement;
+  private isScoreboardCollapsed = false;
 
-  public joystickZoneEl: HTMLElement | null = null;
-  public joystickKnobEl: HTMLElement | null = null;
-  public enterBtnEl: HTMLElement | null = null;
-  public brakeBtnEl: HTMLElement | null = null;
+  public touchBindings!: TouchControlBindings;
 
   private currentNearbyVehicle: { id: string; availableSeat: 0 | 1 | null } | null = null;
   private currentLocalMode: 'walking' | 'driver' | 'passenger' = 'walking';
@@ -68,140 +91,190 @@ export class HUD {
 
   private render(): void {
     this.root.innerHTML = `
-      <!-- Top Bar HUD -->
+      <!-- Portrait Rotate Helper (Mobile Portrait Only) -->
+      <div class="rotate-banner" id="rotate-banner">
+        <span>↻ Rotate iPhone to <strong>Landscape</strong> for full cockpit view</span>
+      </div>
+
+      <!-- Compact Single-Row Top Bar -->
       <header class="hud-top-bar" id="hud-top-bar" style="display: none;">
-        <div class="hud-panel room-badge">
-          <span>ROOM: <span class="room-id" id="room-id">----</span></span>
-          <button class="btn btn-secondary btn-sm" id="btn-copy-invite">Share Invite</button>
-          <div class="ping-indicator">
-            <span class="ping-dot" id="ping-dot"></span>
-            <span id="ping-text">-- ms</span>
+        <!-- Left: Room + Telemetry + Utility Icons -->
+        <div class="hud-panel hud-bar-left">
+          <button class="room-copy-pill" id="btn-copy-invite" title="Tap to Share Room Link">
+            <span class="room-label">ROOM</span>
+            <span class="room-id" id="room-id">----</span>
+            <span class="copy-icon">🔗</span>
+          </button>
+          <div class="telemetry-cluster">
+            <span class="ping-indicator">
+              <span class="ping-dot" id="ping-dot"></span>
+              <span id="ping-text">-- ms</span>
+            </span>
+            <span class="fps-indicator" id="fps-text">60 FPS</span>
           </div>
+          <button class="icon-btn" id="btn-audio-toggle" title="Toggle Sound">🔊</button>
+          <button class="icon-btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
         </div>
 
-        <div class="hud-center-group">
-          <div class="delivery-card" id="delivery-card">
-            <span class="delivery-phase-badge available" id="delivery-phase-badge">AVAILABLE</span>
-            <span class="delivery-text" id="delivery-text">Co-op Delivery: 2 players board a car at Waterfront</span>
-          </div>
-
-          <!-- Grand Prix Racing HUD Card -->
-          <div class="race-hud-card" id="race-hud-card">
-            <span class="race-lap-badge" id="race-lap-badge">GRAND PRIX</span>
-            <span class="race-timer" id="race-timer">READY</span>
-            <button class="btn btn-primary btn-xs" id="btn-start-race">🏁 Start Race</button>
-          </div>
+        <!-- Center: Unified Grand Prix & Mission Strip -->
+        <div class="hud-panel hud-bar-center">
+          <span class="race-lap-badge" id="race-lap-badge">GRAND PRIX</span>
+          <span class="race-timer" id="race-timer">READY</span>
+          <button class="btn btn-primary btn-xs" id="btn-start-race">🏁 Race</button>
+          <span class="mission-divider">|</span>
+          <span class="delivery-text" id="delivery-text">Co-op: Board car at Docks</span>
         </div>
 
-        <div class="hud-panel role-badge">
+        <!-- Right: Digital Speedometer & Role -->
+        <div class="hud-panel hud-bar-right">
+          <div class="speedo-box" id="speed-display-wrap" style="display: none;">
+            <span class="speed-value" id="speed-display">0</span>
+            <span class="speed-unit">KM/H</span>
+          </div>
           <span class="role-pill walking" id="role-pill">WALKING</span>
-          <span class="speed-display" id="speed-display" style="display: none;">0 KM/H</span>
+          <button class="btn btn-danger btn-xs" id="btn-top-exit" style="display: none;">⏏ EXIT</button>
         </div>
       </header>
+
+      <!-- Top-Left Mini-Map Radar + Chat Toggle -->
+      <div class="hud-left-stack" id="radar-wrap" style="display: none;">
+        <div class="radar-card">
+          <canvas id="radar-canvas" class="radar-canvas"></canvas>
+          <div class="radar-label">METRO RADAR</div>
+        </div>
+        <button class="chat-fab" id="btn-chat-toggle" title="Toggle Chat">
+          💬 <span class="chat-fab-label">CHAT</span>
+          <span class="chat-unread-badge" id="chat-unread-badge" style="display: none;">0</span>
+        </button>
+      </div>
+
+      <!-- Incoming Chat Toast Banner -->
+      <div class="chat-toast-host" id="chat-toast-host"></div>
+
+      <!-- Collapsible Top-Right Leaderboard -->
+      <aside class="race-scoreboard" id="race-scoreboard" style="display: none;">
+        <div class="scoreboard-header" id="scoreboard-header" title="Tap to collapse/expand">
+          <span>🏆 STANDINGS</span>
+          <span class="scoreboard-status" id="scoreboard-status">LIVE ▾</span>
+        </div>
+        <div class="scoreboard-entries" id="scoreboard-entries"></div>
+      </aside>
 
       <!-- Center Countdown Overlay -->
       <div class="race-countdown-overlay" id="race-countdown-overlay" style="display: none;">
         <span class="countdown-number" id="countdown-text">3</span>
       </div>
 
-      <!-- Live Race Scoreboard (Top Right Below Header) -->
-      <aside class="race-scoreboard" id="race-scoreboard" style="display: none;">
-        <div class="scoreboard-header">
-          <span>🏆 LEADERBOARD</span>
-          <span class="scoreboard-status" id="scoreboard-status">LIVE</span>
+      <!-- Center Proximity Toast -->
+      <div class="interact-toast" id="interact-toast" style="display: none;">
+        <span id="toast-text">Tap ENTER or press [E] to Drive</span>
+      </div>
+
+      <!-- Collapsible Chat Drawer Modal/Sheet -->
+      <aside class="chat-drawer" id="chat-drawer" style="display: none;">
+        <div class="chat-header">
+          <span>💬 DISTRICT COMMS</span>
+          <button class="chat-close-btn" id="btn-chat-close">✕</button>
         </div>
-        <div class="scoreboard-entries" id="scoreboard-entries"></div>
+        <div class="chat-messages" id="chat-messages"></div>
+        <form class="chat-form" id="chat-form">
+          <input type="text" class="chat-input" id="chat-input" placeholder="Send message..." maxlength="240" autocomplete="off" />
+          <button type="submit" class="btn btn-primary btn-sm">Send</button>
+        </form>
       </aside>
 
-      <!-- Center Proximity Prompt -->
-      <div class="interact-toast" id="interact-toast" style="display: none;">
-        <span id="toast-text">Press [E] to Drive</span>
-      </div>
-
-      <!-- Bottom Chat & Touch Area -->
-      <div style="display: flex; justify-content: space-between; align-items: flex-end; width: 100%;">
-        <!-- Text Chat Drawer -->
-        <aside class="chat-drawer" id="chat-drawer" style="display: none;">
-          <div class="chat-header">
-            <span>DISTRICT CHAT</span>
-            <span style="font-size: 10px; color: var(--cyan);">PRIVATE PROTOTYPE</span>
+      <!-- Anchored Corner Touch Controls (Walking vs Driving Mode) -->
+      <div class="touch-layer" id="touch-zone" style="display: none;">
+        <!-- WALKING: Left Analog Stick -->
+        <div class="joystick-zone" id="joystick-zone">
+          <div class="joystick-base">
+            <div class="joystick-knob" id="joystick-knob"></div>
           </div>
-          <div class="chat-messages" id="chat-messages"></div>
-          <form class="chat-form" id="chat-form">
-            <input type="text" class="chat-input" id="chat-input" placeholder="Press Enter to chat..." maxlength="240" autocomplete="off" />
-            <button type="submit" class="btn btn-primary btn-sm">Send</button>
-          </form>
-        </aside>
+        </div>
 
-        <!-- Touch Controls -->
-        <div class="touch-zone" id="touch-zone" style="display: none;">
-          <div class="joystick-zone" id="joystick-zone">
-            <div class="joystick-base">
-              <div class="joystick-knob" id="joystick-knob"></div>
-            </div>
-          </div>
-          <div class="actions-zone">
-            <button class="touch-btn btn-enter" id="touch-btn-enter">ENTER</button>
-            <button class="touch-btn btn-brake" id="touch-btn-brake" style="display: none;">BRAKE</button>
+        <!-- DRIVING LEFT: Ergonomic Steer Left / Right Buttons -->
+        <div class="driving-steer-zone" id="driving-steer-zone" style="display: none;">
+          <button class="steer-btn" id="touch-btn-steer-left" aria-label="Steer Left">◀</button>
+          <button class="steer-btn" id="touch-btn-steer-right" aria-label="Steer Right">▶</button>
+        </div>
+
+        <!-- RIGHT ACTIONS: Enter Car (Walking) OR Gas/Brake/Drift Pedals (Driving) -->
+        <div class="actions-zone">
+          <button class="touch-btn btn-enter" id="touch-btn-enter">🚗 ENTER</button>
+          <div class="driving-pedals-zone" id="driving-pedals-zone" style="display: none;">
+            <button class="pedal-btn btn-drift" id="touch-btn-drift">💨 DRIFT</button>
+            <button class="pedal-btn btn-brake" id="touch-btn-brake">🛑 BRAKE / REV</button>
+            <button class="pedal-btn btn-gas" id="touch-btn-gas">⚡ GAS</button>
           </div>
         </div>
       </div>
 
-      <div class="proto-disclaimer">SyncCity v1.0 · Authoritative Physics & Seating · Multi-Client Prototype</div>
-
-      <!-- Lobby / Room Join Modal -->
+      <!-- Landscape-Optimized .io Instant Lobby Modal -->
       <div class="modal-overlay" id="lobby-modal">
         <div class="modal-card">
-          <div class="modal-header">
-            <h1 class="modal-title">SYNC<span>CITY</span></h1>
-            <p class="modal-tagline">Meet in the city. Jump in the same car. Deliver together.</p>
+          <div class="modal-brand-col">
+            <div class="modal-header">
+              <div class="io-badge">LIVE .IO MULTIPLAYER</div>
+              <h1 class="modal-title">SYNC<span>CITY</span></h1>
+              <p class="modal-tagline">400m Synthwave Metropolis · Co-op Driving & Grand Prix Racing</p>
+            </div>
+            <div class="form-group">
+              <label for="input-nickname">Driver Callsign</label>
+              <input type="text" id="input-nickname" class="form-input" placeholder="e.g. NeonDrifter" maxlength="20" />
+            </div>
+            <div id="modal-error" class="error-banner" style="display: none;"></div>
           </div>
 
-          <div id="modal-error" class="error-banner" style="display: none;"></div>
-
-          <div class="form-group">
-            <label for="input-nickname">Your Nickname</label>
-            <input type="text" id="input-nickname" class="form-input" placeholder="e.g. NeonRider" maxlength="20" autofocus />
+          <div class="modal-actions-col">
+            <button class="btn btn-quickplay" id="btn-quick-play">
+              ⚡ QUICK PLAY NOW
+            </button>
+            <button class="btn btn-secondary" id="btn-create-room">
+              🔒 Create Private Room
+            </button>
+            <div class="join-row">
+              <input type="text" id="input-room-id" class="form-input join-code-input" placeholder="Room Code..." maxlength="32" />
+              <button class="btn btn-accent" id="btn-join-room">Join</button>
+            </div>
           </div>
-
-          <button class="btn btn-primary" id="btn-create-room">Create Private Room</button>
-
-          <div class="divider">OR JOIN EXISTING ROOM</div>
-
-          <div class="form-group">
-            <label for="input-room-id">Room Code</label>
-            <input type="text" id="input-room-id" class="form-input" placeholder="e.g. ABC123XYZ" maxlength="32" />
-          </div>
-
-          <button class="btn btn-secondary" id="btn-join-room">Join Room</button>
         </div>
       </div>
     `;
 
-    // Cache elements
     this.modalEl = this.root.querySelector('#lobby-modal')!;
     this.hudTopBarEl = this.root.querySelector('#hud-top-bar')!;
-    this.deliveryCardEl = this.root.querySelector('#delivery-card')!;
+    this.radarWrapEl = this.root.querySelector('#radar-wrap')!;
+    this.radarCanvasEl = this.root.querySelector('#radar-canvas')!;
+
     this.interactToastEl = this.root.querySelector('#interact-toast')!;
-    this.chatDrawerEl = this.root.querySelector('#chat-drawer')!;
-    this.touchZoneEl = this.root.querySelector('#touch-zone')!;
-
-    this.pingDotEl = this.root.querySelector('#ping-dot')!;
-    this.pingTextEl = this.root.querySelector('#ping-text')!;
-    this.roomIdEl = this.root.querySelector('#room-id')!;
-    this.copyBtnEl = this.root.querySelector('#btn-copy-invite')!;
-    this.rolePillEl = this.root.querySelector('#role-pill')!;
-    this.speedDisplayEl = this.root.querySelector('#speed-display')!;
-
-    this.deliveryBadgeEl = this.root.querySelector('#delivery-phase-badge')!;
-    this.deliveryTextEl = this.root.querySelector('#delivery-text')!;
     this.toastTextEl = this.root.querySelector('#toast-text')!;
 
+    this.chatDrawerEl = this.root.querySelector('#chat-drawer')!;
+    this.chatToggleBtnEl = this.root.querySelector('#btn-chat-toggle')!;
+    this.chatUnreadBadgeEl = this.root.querySelector('#chat-unread-badge')!;
+    this.chatToastHostEl = this.root.querySelector('#chat-toast-host')!;
     this.chatMessagesEl = this.root.querySelector('#chat-messages')!;
     this.chatInputEl = this.root.querySelector('#chat-input')!;
 
-    // Racing & Scoreboard elements
-    this.raceHudCardEl = this.root.querySelector('#race-hud-card')!;
+    this.touchZoneEl = this.root.querySelector('#touch-zone')!;
+    this.walkingControlsEl = this.root.querySelector('#joystick-zone')!;
+    this.drivingLeftControlsEl = this.root.querySelector('#driving-steer-zone')!;
+    this.drivingRightControlsEl = this.root.querySelector('#driving-pedals-zone')!;
+
+    this.pingDotEl = this.root.querySelector('#ping-dot')!;
+    this.pingTextEl = this.root.querySelector('#ping-text')!;
+    this.fpsTextEl = this.root.querySelector('#fps-text')!;
+    this.roomIdEl = this.root.querySelector('#room-id')!;
+    this.copyBtnEl = this.root.querySelector('#btn-copy-invite')!;
+    this.audioBtnEl = this.root.querySelector('#btn-audio-toggle')!;
+    this.fullscreenBtnEl = this.root.querySelector('#btn-fullscreen')!;
+
+    this.rolePillEl = this.root.querySelector('#role-pill')!;
+    this.speedDisplayEl = this.root.querySelector('#speed-display')!;
+    this.topExitBtnEl = this.root.querySelector('#btn-top-exit')!;
+
+    this.deliveryTextEl = this.root.querySelector('#delivery-text')!;
+
     this.raceLapBadgeEl = this.root.querySelector('#race-lap-badge')!;
     this.raceTimerEl = this.root.querySelector('#race-timer')!;
     this.btnStartRaceEl = this.root.querySelector('#btn-start-race')!;
@@ -211,33 +284,62 @@ export class HUD {
     this.scoreboardStatusEl = this.root.querySelector('#scoreboard-status')!;
     this.scoreboardEntriesEl = this.root.querySelector('#scoreboard-entries')!;
 
-    this.joystickZoneEl = this.root.querySelector('#joystick-zone');
-    this.joystickKnobEl = this.root.querySelector('#joystick-knob');
-    this.enterBtnEl = this.root.querySelector('#touch-btn-enter');
-    this.brakeBtnEl = this.root.querySelector('#touch-btn-brake');
+    this.touchBindings = {
+      joystickZone: this.root.querySelector('#joystick-zone'),
+      joystickKnob: this.root.querySelector('#joystick-knob'),
+      enterBtn: this.root.querySelector('#touch-btn-enter'),
+      steerLeftBtn: this.root.querySelector('#touch-btn-steer-left'),
+      steerRightBtn: this.root.querySelector('#touch-btn-steer-right'),
+      gasBtn: this.root.querySelector('#touch-btn-gas'),
+      brakeBtn: this.root.querySelector('#touch-btn-brake'),
+      driftBtn: this.root.querySelector('#touch-btn-drift'),
+    };
 
     this.bindEvents();
     this.detectTouchDevice();
   }
 
   private detectTouchDevice(): void {
-    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const isTouch =
+      'ontouchstart' in window ||
+      navigator.maxTouchPoints > 0 ||
+      window.matchMedia('(pointer: coarse)').matches;
     if (isTouch) {
-      this.touchZoneEl.style.display = 'flex';
+      this.touchZoneEl.style.display = 'block';
     }
   }
 
   private bindEvents(): void {
     const nickInput = this.root.querySelector<HTMLInputElement>('#input-nickname')!;
     const roomInput = this.root.querySelector<HTMLInputElement>('#input-room-id')!;
+    const quickPlayBtn = this.root.querySelector<HTMLButtonElement>('#btn-quick-play')!;
     const createBtn = this.root.querySelector<HTMLButtonElement>('#btn-create-room')!;
     const joinBtn = this.root.querySelector<HTMLButtonElement>('#btn-join-room')!;
 
-    // Auto-generate cool default name
-    nickInput.value = `Rider_${Math.floor(100 + Math.random() * 900)}`;
+    const randomPrefix = CYBER_NAMES[Math.floor(Math.random() * CYBER_NAMES.length)];
+    nickInput.value = `${randomPrefix}_${Math.floor(10 + Math.random() * 89)}`;
+
+    // 1-Tap Quick Play (Joins room code if entered, else joins/creates default room)
+    quickPlayBtn.addEventListener('click', async () => {
+      const name = nickInput.value.trim() || 'NeonDriver';
+      const code = roomInput.value.trim();
+      quickPlayBtn.disabled = true;
+      try {
+        if (code) {
+          await this.actions.onJoin(name, code, false);
+        } else {
+          await this.actions.onJoin(name, undefined, false);
+        }
+        this.hideLobby();
+      } catch (err: any) {
+        this.showError(err?.message || 'Connection failed');
+      } finally {
+        quickPlayBtn.disabled = false;
+      }
+    });
 
     createBtn.addEventListener('click', async () => {
-      const name = nickInput.value.trim() || 'Player';
+      const name = nickInput.value.trim() || 'NeonDriver';
       createBtn.disabled = true;
       try {
         await this.actions.onJoin(name, undefined, true);
@@ -250,10 +352,10 @@ export class HUD {
     });
 
     joinBtn.addEventListener('click', async () => {
-      const name = nickInput.value.trim() || 'Player';
+      const name = nickInput.value.trim() || 'NeonDriver';
       const code = roomInput.value.trim();
       if (!code) {
-        this.showError('Please enter a room code');
+        this.showError('Enter a room code to join');
         return;
       }
       joinBtn.disabled = true;
@@ -279,30 +381,75 @@ export class HUD {
       }
     });
 
+    // Top Exit Vehicle Button
+    this.topExitBtnEl.addEventListener('click', () => {
+      this.actions.onExitVehicle();
+    });
+
+    // Audio Toggle
+    this.audioBtnEl.addEventListener('click', () => {
+      if (this.actions.onToggleAudio) {
+        const muted = this.actions.onToggleAudio();
+        this.audioBtnEl.textContent = muted ? '🔇' : '🔊';
+      }
+    });
+
+    // Fullscreen Toggle
+    this.fullscreenBtnEl.addEventListener('click', () => {
+      const docEl = document.documentElement as any;
+      if (!document.fullscreenElement) {
+        if (docEl.requestFullscreen) docEl.requestFullscreen().catch(() => {});
+        else if (docEl.webkitRequestFullscreen) docEl.webkitRequestFullscreen();
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    // Collapsible Scoreboard
+    const sbHeader = this.root.querySelector('#scoreboard-header')!;
+    sbHeader.addEventListener('click', () => {
+      this.isScoreboardCollapsed = !this.isScoreboardCollapsed;
+      this.scoreboardEntriesEl.style.display = this.isScoreboardCollapsed ? 'none' : 'flex';
+    });
+
     // Copy / Share invite
     this.copyBtnEl.addEventListener('click', async () => {
-      const url = `${window.location.origin}${window.location.pathname}?room=${this.roomIdEl.textContent}`;
+      const code = this.roomIdEl.textContent || '';
+      const url = `${window.location.origin}${window.location.pathname}?room=${code}`;
       if (navigator.share) {
         try {
           await navigator.share({
-            title: 'SyncCity',
-            text: `Meet me in SyncCity room ${this.roomIdEl.textContent}!`,
+            title: 'SyncCity Racing',
+            text: `Race me in SyncCity! Room: ${code}`,
             url,
           });
           return;
         } catch {}
       }
-
       navigator.clipboard.writeText(url).then(() => {
-        const originalText = this.copyBtnEl.textContent;
-        this.copyBtnEl.textContent = 'Copied Link!';
+        const prev = this.roomIdEl.textContent;
+        this.roomIdEl.textContent = 'COPIED!';
         setTimeout(() => {
-          this.copyBtnEl.textContent = originalText;
-        }, 2000);
+          this.roomIdEl.textContent = prev;
+        }, 1500);
       });
     });
 
-    // Chat form
+    // Chat Drawer Toggle
+    const toggleChat = () => {
+      this.isChatOpen = !this.isChatOpen;
+      this.chatDrawerEl.style.display = this.isChatOpen ? 'flex' : 'none';
+      if (this.isChatOpen) {
+        this.unreadCount = 0;
+        this.chatUnreadBadgeEl.style.display = 'none';
+      } else {
+        this.actions.onChatFocusChange(false);
+      }
+    };
+    this.chatToggleBtnEl.addEventListener('click', toggleChat);
+    this.root.querySelector('#btn-chat-close')!.addEventListener('click', toggleChat);
+
+    // Chat Form
     const chatForm = this.root.querySelector<HTMLFormElement>('#chat-form')!;
     chatForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -319,7 +466,6 @@ export class HUD {
     this.chatInputEl.addEventListener('focus', () => {
       this.actions.onChatFocusChange(true);
     });
-
     this.chatInputEl.addEventListener('blur', () => {
       this.actions.onChatFocusChange(false);
     });
@@ -328,6 +474,7 @@ export class HUD {
   public showLobby(roomFromUrl?: string): void {
     this.modalEl.style.display = 'flex';
     this.hudTopBarEl.style.display = 'none';
+    this.radarWrapEl.style.display = 'none';
     this.chatDrawerEl.style.display = 'none';
 
     if (roomFromUrl) {
@@ -339,7 +486,7 @@ export class HUD {
   public hideLobby(): void {
     this.modalEl.style.display = 'none';
     this.hudTopBarEl.style.display = 'flex';
-    this.chatDrawerEl.style.display = 'flex';
+    this.radarWrapEl.style.display = 'flex';
     this.detectTouchDevice();
   }
 
@@ -354,10 +501,10 @@ export class HUD {
       this.pingDotEl.className = 'ping-dot';
     } else if (status === 'reconnecting') {
       this.pingDotEl.className = 'ping-dot warning';
-      this.pingTextEl.textContent = 'Reconnecting...';
+      this.pingTextEl.textContent = 'Retry...';
     } else {
       this.pingDotEl.className = 'ping-dot danger';
-      this.pingTextEl.textContent = 'Disconnected';
+      this.pingTextEl.textContent = 'Offline';
       if (error) this.showError(error);
     }
   }
@@ -371,6 +518,10 @@ export class HUD {
     } else {
       this.pingDotEl.className = 'ping-dot';
     }
+  }
+
+  public updateFPS(fps: number): void {
+    this.fpsTextEl.textContent = `${Math.round(fps)} FPS`;
   }
 
   private formatTimeMs(ms: number): string {
@@ -395,51 +546,73 @@ export class HUD {
     this.currentNearbyVehicle = data.nearbyVehicle;
     this.currentLocalMode = data.localPlayer.mode;
 
-    // Role badge & Speedometer
+    const speedWrap = this.root.querySelector<HTMLElement>('#speed-display-wrap')!;
+    const enterBtn = this.touchBindings.enterBtn;
+
+    // Role & Mode-Adaptive Controls (Walking vs Driving)
     this.rolePillEl.className = `role-pill ${data.localPlayer.mode}`;
     this.rolePillEl.textContent = data.localPlayer.mode.toUpperCase();
 
     if (data.localPlayer.mode === 'driver') {
-      this.speedDisplayEl.style.display = 'inline-block';
+      speedWrap.style.display = 'inline-flex';
       const kmh = Math.round(Math.abs(data.carSpeed || 0) * 3.6);
-      this.speedDisplayEl.textContent = `${kmh} KM/H`;
-      if (this.brakeBtnEl) this.brakeBtnEl.style.display = 'flex';
-      if (this.enterBtnEl) this.enterBtnEl.textContent = 'EXIT';
+      this.speedDisplayEl.textContent = `${kmh}`;
+      this.topExitBtnEl.style.display = 'inline-flex';
+
+      // Switch mobile controls to Arcade Steer + Pedals
+      this.walkingControlsEl.style.display = 'none';
+      this.drivingLeftControlsEl.style.display = 'flex';
+      this.drivingRightControlsEl.style.display = 'flex';
+      if (enterBtn) enterBtn.style.display = 'none';
     } else if (data.localPlayer.mode === 'passenger') {
-      this.speedDisplayEl.style.display = 'inline-block';
+      speedWrap.style.display = 'inline-flex';
       const kmh = Math.round(Math.abs(data.carSpeed || 0) * 3.6);
-      this.speedDisplayEl.textContent = `${kmh} KM/H`;
-      if (this.brakeBtnEl) this.brakeBtnEl.style.display = 'none';
-      if (this.enterBtnEl) this.enterBtnEl.textContent = 'EXIT';
+      this.speedDisplayEl.textContent = `${kmh}`;
+      this.topExitBtnEl.style.display = 'inline-flex';
+
+      this.walkingControlsEl.style.display = 'none';
+      this.drivingLeftControlsEl.style.display = 'none';
+      this.drivingRightControlsEl.style.display = 'none';
+      if (enterBtn) {
+        enterBtn.style.display = 'flex';
+        enterBtn.textContent = '⏏ EXIT';
+      }
     } else {
-      this.speedDisplayEl.style.display = 'none';
-      if (this.brakeBtnEl) this.brakeBtnEl.style.display = 'none';
-      if (this.enterBtnEl) this.enterBtnEl.textContent = 'ENTER';
+      speedWrap.style.display = 'none';
+      this.topExitBtnEl.style.display = 'none';
+
+      // Walking mode: Virtual Analog Stick + Contextual Enter Car button
+      this.walkingControlsEl.style.display = 'flex';
+      this.drivingLeftControlsEl.style.display = 'none';
+      this.drivingRightControlsEl.style.display = 'none';
+
+      if (enterBtn) {
+        if (data.nearbyVehicle && data.nearbyVehicle.availableSeat !== null) {
+          enterBtn.style.display = 'flex';
+          enterBtn.textContent = data.nearbyVehicle.availableSeat === 0 ? '🚗 DRIVE' : '💺 RIDE';
+        } else {
+          enterBtn.style.display = 'none';
+        }
+      }
     }
 
-    // Interaction Prompt
-    if (data.localPlayer.mode !== 'walking') {
-      this.interactToastEl.style.display = 'block';
-      this.toastTextEl.textContent = 'Press [E] or tap EXIT to leave vehicle';
-    } else if (data.nearbyVehicle && data.nearbyVehicle.availableSeat !== null) {
+    // Proximity Toast (Walking only, non-obstructive)
+    if (data.localPlayer.mode === 'walking' && data.nearbyVehicle && data.nearbyVehicle.availableSeat !== null) {
       this.interactToastEl.style.display = 'block';
       const roleText = data.nearbyVehicle.availableSeat === 0 ? 'Drive' : 'Ride as Passenger';
-      this.toastTextEl.textContent = `Press [E] or tap ENTER to ${roleText}`;
+      this.toastTextEl.textContent = `Tap 🚗 or press [E] to ${roleText}`;
     } else {
       this.interactToastEl.style.display = 'none';
     }
 
-    // Delivery Card
+    // Compact Delivery Text
     const deliv = data.delivery;
-    this.deliveryBadgeEl.className = `delivery-phase-badge ${deliv.phase}`;
-    this.deliveryBadgeEl.textContent = deliv.phase.toUpperCase();
-
     if (deliv.phase === 'available') {
-      this.deliveryTextEl.textContent = 'Co-op Delivery: 2 players board a car at Waterfront Warehouse';
+      this.deliveryTextEl.textContent = 'Co-op: 2 players board at Docks';
     } else if (deliv.phase === 'active') {
-      this.deliveryTextEl.textContent = 'Active Delivery: Drive together to City Hall Drop-off!';
-    } else if (deliv.phase === 'complete') {
-      this.deliveryTextEl.textContent = 'Delivery Complete! Well done! (New mission in 10s)';
+      this.deliveryTextEl.textContent = 'Co-op Active: Drive to City Hall!';
+    } else {
+      this.deliveryTextEl.textContent = 'Co-op Delivered! +Bonus';
     }
 
     // Grand Prix Racing HUD & Countdown
@@ -448,7 +621,6 @@ export class HUD {
       if (race.status === 'countdown') {
         this.raceCountdownOverlayEl.style.display = 'flex';
         this.countdownTextEl.textContent = race.countdownSeconds === 0 ? 'GO!' : `${race.countdownSeconds}`;
-        this.countdownTextEl.className = race.countdownSeconds === 0 ? 'countdown-number go' : 'countdown-number';
       } else {
         this.raceCountdownOverlayEl.style.display = 'none';
       }
@@ -464,20 +636,21 @@ export class HUD {
       } else if (race.status === 'finished') {
         this.raceLapBadgeEl.textContent = 'FINISHED';
         this.raceLapBadgeEl.className = 'race-lap-badge complete';
-        this.btnStartRaceEl.style.display = 'inline-block';
-        this.btnStartRaceEl.textContent = '🏁 New Race';
+        this.btnStartRaceEl.style.display = 'inline-flex';
+        this.btnStartRaceEl.textContent = '🏁 Rematch';
       } else {
         this.raceLapBadgeEl.textContent = 'GRAND PRIX';
         this.raceLapBadgeEl.className = 'race-lap-badge';
         this.raceTimerEl.textContent = 'READY';
-        this.btnStartRaceEl.style.display = 'inline-block';
+        this.btnStartRaceEl.style.display = 'inline-flex';
         this.btnStartRaceEl.textContent = '🏁 Start Race';
       }
 
-      // Live Scoreboard
       if (race.status === 'racing' || race.status === 'finished') {
         this.raceScoreboardEl.style.display = 'flex';
-        this.scoreboardStatusEl.textContent = race.status === 'finished' ? 'FINAL RESULTS' : 'LIVE';
+        const suffix = this.isScoreboardCollapsed ? '▸' : '▾';
+        this.scoreboardStatusEl.textContent =
+          race.status === 'finished' ? `RESULTS ${suffix}` : `LIVE ${suffix}`;
 
         const parts = Object.values(race.participants).sort((a, b) => {
           if (a.finished && !b.finished) return -1;
@@ -487,14 +660,15 @@ export class HUD {
         });
 
         this.scoreboardEntriesEl.innerHTML = parts
+          .slice(0, 4)
           .map((p, idx) => {
             const isLocal = p.playerId === data.localPlayer.id;
             const rankLabel = p.finished ? `#${p.rank}` : `#${idx + 1}`;
             const timeLabel = p.finished
               ? this.formatTimeMs(p.totalTimeMs)
               : p.bestLapMs > 0
-              ? `Best: ${this.formatTimeMs(p.bestLapMs)}`
-              : `Lap ${p.currentLap}`;
+              ? this.formatTimeMs(p.bestLapMs)
+              : `L${p.currentLap}`;
             return `
               <div class="scoreboard-row ${isLocal ? 'local' : ''}">
                 <span class="sb-rank">${rankLabel}</span>
@@ -527,7 +701,7 @@ export class HUD {
 
     const senderSpan = document.createElement('span');
     senderSpan.className = 'sender';
-    senderSpan.textContent = msg.displayName;
+    senderSpan.textContent = `${msg.displayName}:`;
 
     const textSpan = document.createElement('span');
     textSpan.className = 'text';
@@ -539,9 +713,23 @@ export class HUD {
     this.chatMessagesEl.appendChild(div);
     this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
 
-    // Prune history client-side <= 50 messages
     while (this.chatMessagesEl.children.length > 50) {
       this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild!);
+    }
+
+    // If chat drawer is closed, show a non-intrusive floating toast for 4 seconds
+    if (!this.isChatOpen) {
+      this.unreadCount++;
+      this.chatUnreadBadgeEl.textContent = `${this.unreadCount}`;
+      this.chatUnreadBadgeEl.style.display = 'inline-flex';
+
+      const toast = document.createElement('div');
+      toast.className = 'chat-toast-pill';
+      toast.innerHTML = `<strong>${msg.displayName}:</strong> ${msg.text}`;
+      this.chatToastHostEl.appendChild(toast);
+      setTimeout(() => {
+        toast.remove();
+      }, 4000);
     }
   }
 }
